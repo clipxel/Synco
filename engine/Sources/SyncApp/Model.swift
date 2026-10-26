@@ -136,6 +136,12 @@ final class AppModel: ObservableObject {
             savePrefs()
             UserDefaults.standard.set(1, forKey: "prefsFixes")
         }
+        // 1.0.3: synced clips get the blue label by default (they had none).
+        if persist, UserDefaults.standard.integer(forKey: "prefsFixes") < 2 {
+            if prefs.export.syncedLabel.isEmpty { prefs.export.syncedLabel = "Blue" }
+            savePrefs()
+            UserDefaults.standard.set(2, forKey: "prefsFixes")
+        }
     }
 
     private func savePrefs() {
@@ -150,6 +156,17 @@ final class AppModel: ObservableObject {
     var recorders: Int { tracks.filter { $0.kind == .recorder }.count }
     var clipCount: Int { project?.clips.count ?? 0 }
     var syncedCount: Int { placements.values.filter { $0.method.synced }.count }
+
+    func count(_ q: SyncQuality) -> Int {
+        guard let outcome else { return 0 }
+        return placements.values.filter { outcome.quality($0) == q }.count
+    }
+
+    /// Blue, yellow or red for a clip, once synced.
+    func quality(_ id: String) -> SyncQuality? {
+        guard let p = placements[id] else { return nil }
+        return outcome?.quality(p)
+    }
     var remainingCount: Int { clipCount - syncedCount }
     var fps: Double { Double(project?.fps ?? 25) }
     var report: String { outcome.flatMap { o in session?.report(o) } ?? "" }

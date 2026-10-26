@@ -56,12 +56,14 @@ struct Counter: View {
     let label: String
     var large = false
     var highlight = false
+    /// The number's colour when it is not zero (the clip colours: blue, yellow, red).
+    var tint: Color? = nil
 
     var body: some View {
         VStack(spacing: 0) {
             Text("\(value)")
                 .font(large ? Theme.Font.counterLg : Theme.Font.counter)
-                .foregroundStyle(value == 0 ? Theme.textMuted : (highlight ? Theme.success : Theme.text))
+                .foregroundStyle(value == 0 ? Theme.textMuted : (tint ?? (highlight ? Theme.success : Theme.text)))
                 .monospacedDigit()
             Text(label).font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
         }

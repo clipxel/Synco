@@ -16,8 +16,12 @@ enum Theme {
     static let danger = Color(hex: 0xEF6B6B)
     static let success = Color(hex: 0x4CC38A)
     static let warning = Color(hex: 0xE6C84F)
-    static let clipSynced = Color(hex: 0x2E8A5F)
-    static let clipUnsynced = Color(hex: 0xC9578B)
+    /// Blue: found by its audio, exact. Yellow: found by its audio near where its date points,
+    /// worth a look. Red: not found, placed by dates and neighbours.
+    static let clipExact = Color(hex: 0x2F6FD6)
+    static let clipApprox = Color(hex: 0xD9B532)
+    static let clipGuessed = Color(hex: 0xC23B3B)
+    static let onClipApprox = Color(hex: 0x1C1F22)
     static let clipIdle = Color(hex: 0x5B626D)
     static let clipMissing = Color(hex: 0xB33A3A)
     static let onClip = Color.white

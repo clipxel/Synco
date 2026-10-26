@@ -11,8 +11,12 @@ public struct SyncCancelled: Error, CustomStringConvertible {
 
 /// How the synced timeline is written back.
 public struct ExportOptions: Codable, Equatable {
-    /// Premiere label names ("Rose", "Mango", "Forest"...); empty leaves the clip's own label.
-    public var syncedLabel = ""
+    /// Premiere label names ("Blue", "Yellow", "Rose"...); empty leaves the clip's own label.
+    /// Found by its audio anywhere (or confirmed by another camera): exact.
+    public var syncedLabel = "Blue"
+    /// Found by its audio only in the stretch its date and its neighbours point to: worth a look.
+    public var approxLabel = "Yellow"
+    /// Not found by its audio: placed by date, time and neighbours as a best guess.
     public var unsyncedLabel = "Rose"
     public var disableUnsynced = false
     /// Appended to the sequence name, so the synced copy is easy to tell apart.
@@ -20,6 +24,28 @@ public struct ExportOptions: Codable, Equatable {
     public var writeReport = true
 
     public init() {}
+
+    // Settings saved by older versions lack newer keys: those take their defaults.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = ExportOptions()
+        syncedLabel = try c.decodeIfPresent(String.self, forKey: .syncedLabel) ?? d.syncedLabel
+        approxLabel = try c.decodeIfPresent(String.self, forKey: .approxLabel) ?? d.approxLabel
+        unsyncedLabel = try c.decodeIfPresent(String.self, forKey: .unsyncedLabel) ?? d.unsyncedLabel
+        disableUnsynced = try c.decodeIfPresent(Bool.self, forKey: .disableUnsynced) ?? d.disableUnsynced
+        sequenceSuffix = try c.decodeIfPresent(String.self, forKey: .sequenceSuffix) ?? d.sequenceSuffix
+        writeReport = try c.decodeIfPresent(Bool.self, forKey: .writeReport) ?? d.writeReport
+    }
+}
+
+/// How sure a clip's place is, shown in three colours.
+public enum SyncQuality {
+    /// Its audio, searched everywhere, or confirmed against another camera.
+    case exact
+    /// Its audio, searched only where its date and neighbours say it can be.
+    case approximate
+    /// No audio match: a best guess from dates and neighbours.
+    case guessed
 }
 
 /// Everything one sync produced, ready to show or export.
@@ -31,8 +57,18 @@ public struct SyncOutcome {
     /// Same-device clips that ended up overlapping (always a wrong placement).
     public let overlaps: [String]
     public let seconds: Double
+    /// Clips whose place another camera confirmed directly, to a frame or better.
+    public let confirmed: Set<String>
 
     public var synced: Int { placements.filter { $0.method.synced }.count }
+
+    public func quality(_ p: Placement) -> SyncQuality {
+        switch p.method {
+        case .reference, .audio: return .exact
+        case .audioNear: return confirmed.contains(p.id) ? .exact : .approximate
+        case .clock, .unplaced: return .guessed
+        }
+    }
 }
 
 /// One project from open to export: reads the audio, syncs, and writes the result.
@@ -134,8 +170,11 @@ public final class SyncSession {
 
         log("verificando pares de cámaras entre sí…")
         let checks = syncer.crosscheck(result.filter { twinOf[$0.id] == nil })
+        // Confirmed: checked against another camera to a frame or better (and their copies with them).
+        var confirmed = Set(checks.filter { ($0.error.map { abs($0) * Double(project.fps) <= 1 }) ?? false }.flatMap { [$0.a, $0.b] })
+        for (copy, original) in twinOf where confirmed.contains(original) { confirmed.insert(copy) }
         return SyncOutcome(placements: result, starts: starts, checks: checks, overlaps: overlaps,
-                           seconds: Date().timeIntervalSince(started))
+                           seconds: Date().timeIntervalSince(started), confirmed: confirmed)
     }
 
     /// Copies of one recording on the same device (an original and the version converted for
@@ -171,9 +210,12 @@ public final class SyncSession {
         var labels = [String: String]()
         var disabled = Set<String>()
         for p in outcome.placements {
-            if p.method.synced {
+            switch outcome.quality(p) {
+            case .exact:
                 if !options.syncedLabel.isEmpty { labels[p.id] = options.syncedLabel }
-            } else {
+            case .approximate:
+                if !options.approxLabel.isEmpty { labels[p.id] = options.approxLabel }
+            case .guessed:
                 if !options.unsyncedLabel.isEmpty { labels[p.id] = options.unsyncedLabel }
                 if options.disableUnsynced { disabled.insert(p.id) }
             }
@@ -198,6 +240,10 @@ public final class SyncSession {
         var md = "# Sincronización: \(project.sequenceName)\n\n"
         md += String(format: "**%d de %d clips sincronizados por audio (%.1f %%)**. Tiempo: %.0f s.\n\n",
                      outcome.synced, count, 100 * Double(outcome.synced) / Double(max(count, 1)), outcome.seconds)
+        let q = Dictionary(grouping: result, by: { outcome.quality($0) })
+        md += "- azul (exacto, por audio): \(q[.exact]?.count ?? 0)\n"
+        md += "- amarillo (por audio, buscando cerca de su hora o de sus vecinos): \(q[.approximate]?.count ?? 0)\n"
+        md += "- rojo (sin audio en común: ubicado por fecha, hora y vecinos): \(q[.guessed]?.count ?? 0)\n\n"
         for m in [SyncMethod.reference, .audio, .audioNear, .clock, .unplaced] {
             md += "- \(m.rawValue): \(methods[m]?.count ?? 0)\n"
         }
@@ -216,14 +262,15 @@ public final class SyncSession {
         if !problems.isEmpty {
             md += "\n## Archivos con problemas\n\n" + problems.map { "- \(byID[$0.key]?.name ?? $0.key): \($0.value)\n" }.joined()
         }
-        md += "\n## Clips\n\n| clip | dispositivo | método | posición | z | relación | error vs reloj |\n|---|---|---|---|---|---|---|\n"
+        md += "\n## Clips\n\n| clip | dispositivo | método | posición | z | relación | error vs reloj | color |\n|---|---|---|---|---|---|---|---|\n"
         for p in result.sorted(by: { $0.time < $1.time }) {
             let c = byID[p.id]!
             let pos = Double(outcome.starts[p.id] ?? 0) / fps
-            md += String(format: "| %@ | %@ | %@ | %02d:%02d:%05.2f | %.1f | %.2f | %@ |\n",
+            let colour = ["exact": "azul", "approximate": "amarillo", "guessed": "rojo"]["\(outcome.quality(p))"]!
+            md += String(format: "| %@ | %@ | %@ | %02d:%02d:%05.2f | %.1f | %.2f | %@ | %@ |\n",
                          c.name, (c.device as NSString).lastPathComponent, p.method.rawValue,
                          Int(pos) / 3600, Int(pos) / 60 % 60, pos.truncatingRemainder(dividingBy: 60),
-                         p.z, p.ratio, p.clockError.map { String(format: "%+.2f s", $0) } ?? "")
+                         p.z, p.ratio, p.clockError.map { String(format: "%+.2f s", $0) } ?? "", colour)
         }
         return md
     }

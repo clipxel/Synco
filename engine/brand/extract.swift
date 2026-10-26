@@ -23,6 +23,32 @@ struct Pixels {
         let i = (y * w + x) * 4
         data[i] = UInt8(r * a / 255); data[i + 1] = UInt8(g * a / 255); data[i + 2] = UInt8(b * a / 255); data[i + 3] = UInt8(a)
     }
+    /// A crop of another image.
+    init(w: Int, h: Int, from src: Pixels, x0: Int, y0: Int) {
+        self.w = w; self.h = h; data = [UInt8](repeating: 0, count: w * h * 4)
+        for y in 0..<h { for x in 0..<w {
+            let s = ((y + y0) * src.w + x + x0) * 4, d = (y * w + x) * 4
+            for k in 0..<4 { data[d + k] = src.data[s + k] }
+        } }
+    }
+
+    /// Scaled to fit a `box`-pixel square, centred on a transparent `canvas`-pixel square.
+    func fitted(in canvas: Int, box: Int) -> Pixels {
+        var copy = data
+        let space = CGColorSpace(name: CGColorSpace.sRGB)!
+        let ctx = CGContext(data: &copy, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                            space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        let image = ctx.makeImage()!
+        let scale = Double(box) / Double(max(w, h))
+        let dw = Double(w) * scale, dh = Double(h) * scale
+        var out = Pixels(w: canvas, h: canvas)
+        let octx = CGContext(data: &out.data, width: canvas, height: canvas, bitsPerComponent: 8, bytesPerRow: canvas * 4,
+                             space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        octx.interpolationQuality = .high
+        octx.draw(image, in: CGRect(x: (Double(canvas) - dw) / 2, y: (Double(canvas) - dh) / 2, width: dw, height: dh))
+        return out
+    }
+
     func save(_ path: String, size: Int? = nil) {
         var copy = data
         let ctx = CGContext(data: &copy, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
@@ -61,6 +87,15 @@ for y in 1..<(icon.h - 1) { for x in 1..<(icon.w - 1) where !outside[y * icon.w 
     let n = outside[y * icon.w + x - 1] || outside[y * icon.w + x + 1] || outside[(y - 1) * icon.w + x] || outside[(y + 1) * icon.w + x]
     if n { let p = icon.px(x, y); icon.set(x, y, p.0, p.1, p.2, max(0, min(255, (255 - whiteness(p)) * 8))) }
 } }
+// macOS draws icons on an 824-point tile inside 1024 (the rest is room for the shadow): crop
+// the artwork to its own tile, base included, and scale it to that size so it sits like any other app.
+var minX = icon.w, minY = icon.h, maxX = 0, maxY = 0
+for y in 0..<icon.h { for x in 0..<icon.w where icon.px(x, y).3 > 8 {
+    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+} }
+let tile = Pixels(w: maxX - minX + 1, h: maxY - minY + 1, from: icon, x0: minX, y0: minY)
+icon = tile.fitted(in: 1024, box: 824)
+print("ícono: el cuadrado ocupaba \(maxX - minX + 1)×\(maxY - minY + 1) de 1024; ahora llena 824")
 icon.save("icon-1024.png")
 let set = "AppIcon.iconset"
 try? FileManager.default.createDirectory(atPath: set, withIntermediateDirectories: true)

@@ -175,8 +175,13 @@ struct ActionBar: View {
                 }
             }
             Chevron()
-            Counter(value: model.remainingCount, label: "sin sincronizar", large: true)
-            Counter(value: model.syncedCount, label: "sincronizados", large: true, highlight: model.syncedCount > 0)
+            Counter(value: model.count(.exact), label: "exactos", large: true, tint: Theme.clipExact)
+                .help("Encontrados por su audio")
+            Counter(value: model.count(.approximate), label: "aproximados", large: true, tint: Theme.clipApprox)
+                .help("Encontrados por su audio, buscando cerca de su fecha y sus vecinos: conviene mirarlos")
+            Counter(value: model.phase == .done ? model.count(.guessed) : model.remainingCount, label: "sin encontrar", large: true,
+                    tint: model.phase == .done ? Theme.clipGuessed : nil)
+                .help("Sin audio en común: ubicados por fecha, hora y vecinos")
             Spacer()
             HStack(spacing: Theme.Size.space1) {
                 IconButton(systemImage: "gearshape", help: "Ajustes de exportación") { model.showExportSettings = true }
@@ -308,7 +313,7 @@ struct ClipInspector: View {
                 Text("\(clip.track) · \((clip.folder as NSString).lastPathComponent)").font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 Text(formatLength(model.duration(clip))).font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 if let p = model.placements[id] {
-                    Text(methodText(p)).font(Theme.Font.sm).foregroundStyle(p.method.synced ? Theme.success : Theme.clipUnsynced)
+                    Text(methodText(p)).font(Theme.Font.sm).foregroundStyle(qualityColor(model.quality(id)))
                     if let starts = model.starts, let f = starts[id] {
                         Text("en \(formatTimecode(Double(f) / model.fps))").font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                     }
@@ -336,12 +341,20 @@ struct ClipInspector: View {
     }
 }
 
+func qualityColor(_ q: SyncQuality?) -> Color {
+    switch q {
+    case .exact: return Theme.clipExact
+    case .approximate: return Theme.clipApprox
+    case .guessed, nil: return Theme.clipGuessed
+    }
+}
+
 func methodText(_ p: Placement) -> String {
     switch p.method {
     case .reference: return "referencia (grabador principal)"
     case .audio: return String(format: "por audio · z %.1f", p.z)
-    case .audioNear: return String(format: "por audio, cerca de su hora · z %.1f", p.z)
-    case .clock: return "por la hora del archivo (sin audio en común)"
+    case .audioNear: return String(format: p.note == "entre sus vecinos" ? "por audio, entre sus vecinos · z %.1f" : "por audio, cerca de su hora · z %.1f", p.z)
+    case .clock: return p.note.contains("orden") ? "sin audio en común: entre sus vecinos, por fecha y hora" : "sin audio en común: por la hora del archivo"
     case .unplaced: return "sin ubicar: al final"
     }
 }

@@ -89,6 +89,8 @@ public final class Syncer {
     var wallStart = Date()
     var referenceDevice = ""
     var deviceOffsets = [String: Double]()
+    /// Devices whose file date marks when recording stopped, not when it started.
+    public private(set) var clockAtEnd = Set<String>()
     /// Devices whose file dates say nothing about when they recorded.
     public private(set) var unreliableClocks = Set<String>()
 
@@ -107,6 +109,7 @@ public final class Syncer {
         calibrateClocks()
         var round = 1
         while !options.isCancelled(), matchNear(master) > 0 { round += 1; calibrateClocks() }
+        while !options.isCancelled(), matchBetween(master) > 0 { calibrateClocks() }
         if options.isCancelled() { return [] }
         placeByClock()
         return clips.compactMap { placements[$0.id] }
@@ -187,7 +190,7 @@ public final class Syncer {
     // MARK: Clocks
 
     func clockPosition(_ clip: SyncClip) -> Double? {
-        clip.recordedAt.map { $0.timeIntervalSince(wallStart) }
+        clip.recordedAt.map { $0.timeIntervalSince(wallStart) - (clockAtEnd.contains(clip.device) ? clip.duration : 0) }
     }
 
     /// Each device's clock offset from the reference, as the median over its
@@ -195,15 +198,38 @@ public final class Syncer {
     /// A device whose clips disagree among themselves (exports and copies carry the date
     /// they were written, not recorded) has no usable clock: nothing is judged by it.
     func calibrateClocks() {
+        // Whether a device's file date is when it started or stopped recording is read from the
+        // clips already synced: the guess under which they agree with each other wins.
+        func stats(_ v: [Double]) -> (median: Double, spread: Double) {
+            let median = v.sorted()[v.count / 2]
+            return (median, v.map { abs($0 - median) }.sorted()[v.count / 2])
+        }
+        var starts = [String: [Double]](), ends = [String: [Double]]()
+        for clip in clips where clip.device != referenceDevice {
+            guard let p = placements[clip.id], p.method.synced, let date = clip.recordedAt else { continue }
+            let clock = date.timeIntervalSince(wallStart)
+            starts[clip.device, default: []].append(p.time - clock)
+            ends[clip.device, default: []].append(p.time + clip.duration - clock)
+        }
+        for (device, s) in starts where s.count >= 3 {
+            if stats(ends[device]!).spread < stats(s).spread * 0.5 {
+                if !clockAtEnd.contains(device) {
+                    log("\((device as NSString).lastPathComponent): la fecha de sus archivos es cuando terminan de grabar")
+                }
+                clockAtEnd.insert(device)
+            } else {
+                clockAtEnd.remove(device)
+            }
+        }
+
         var byDevice = [String: [(clip: SyncClip, offset: Double)]]()
         for clip in clips where clip.device != referenceDevice {
             guard let p = placements[clip.id], p.method.synced, let clock = clockPosition(clip) else { continue }
             byDevice[clip.device, default: []].append((clip, p.time - clock))
         }
+        unreliableClocks = []
         for (device, list) in byDevice {
-            let sorted = list.map(\.offset).sorted()
-            let median = sorted[sorted.count / 2]
-            let spread = list.map { abs($0.offset - median) }.sorted()[list.count / 2]
+            let (median, spread) = stats(list.map(\.offset))
             if list.count >= 3 && spread > options.clockTolerance {
                 deviceOffsets[device] = nil
                 unreliableClocks.insert(device)
@@ -222,6 +248,7 @@ public final class Syncer {
             }
         }
     }
+
 
     // MARK: Search near the clock
 
@@ -342,6 +369,83 @@ public final class Syncer {
         return best
     }
 
+    // MARK: Search between neighbours
+
+    /// A device's clips in the order they were recorded: by file date (start or end, whichever
+    /// the device writes), then by name. Copies and exports keep this order even when their
+    /// dates are not the recording time.
+    func recordingOrder(_ device: String) -> [SyncClip] {
+        clips.filter { $0.device == device }.sorted {
+            let a = $0.recordedAt ?? .distantPast, b = $1.recordedAt ?? .distantPast
+            return a != b ? a < b : $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// Where a missing clip can be: after the synced clip recorded before it and before the one
+    /// recorded after it, on its own device. Its audio is searched only there, against the
+    /// reference and every other synced device; in a short stretch a peak that was ambiguous
+    /// over hours is often the only one. Returns how many it placed.
+    func matchBetween(_ master: [Float]) -> Int {
+        let slack = 30.0, longest = 90.0 * 60
+        var jobs = [(clip: SyncClip, from: Double, to: Double)]()
+        // A device whose clock proved reliable was already searched around its clock.
+        for device in Set(clips.map(\.device)) where device != referenceDevice && deviceOffsets[device] == nil {
+            let order = recordingOrder(device)
+            for (i, clip) in order.enumerated() where placements[clip.id] == nil && (clip.audio?.samples.count ?? 0) > Int(rate) {
+                let before = order[..<i].last { placements[$0.id]?.method.synced == true }
+                let after = order[(i + 1)...].first { placements[$0.id]?.method.synced == true }
+                guard before != nil || after != nil else { continue }
+                // Only one side known: up to ten minutes beyond it.
+                let from = before.map { placements[$0.id]!.time + $0.duration - slack }
+                    ?? (placements[after!.id]!.time - clip.duration - 600)
+                let to = after.map { placements[$0.id]!.time - clip.duration + slack }
+                    ?? (from + slack + 600)
+                guard to > from, to - from <= longest else { continue }
+                jobs.append((clip, from, to))
+            }
+        }
+        guard !jobs.isEmpty else { return 0 }
+        let lock = NSLock()
+        var found = 0
+        let biggest = jobs.map { Int(($0.to - $0.from) * rate) + $0.clip.audio!.samples.count }.max()!
+        let workers = max(1, min(options.workers, jobs.count, Self.workersThatFit(fftSize(atLeast: biggest * 2))))
+        DispatchQueue.concurrentPerform(iterations: workers) { w in
+            for i in stride(from: w, to: jobs.count, by: workers) {
+                if options.isCancelled() { return }
+                let (clip, from, to) = jobs[i]
+                let samples = clip.audio!.samples
+                let span = Int(((to - from) * rate).rounded())
+                lock.lock()
+                let reference = composite(from: from, length: span + samples.count, excluding: clip.device, master: master)
+                lock.unlock()
+                guard reference.contains(where: { $0 != 0 }) else { continue }
+                let correlator = Correlator(reference: reference, maxClip: samples.count, rate: rate, settings: options.match)
+                guard let m = correlator.match(samples, lags: 0...span) else { continue }
+                // The stretch is narrow, but the peak still has to stand out clearly.
+                guard m.z >= options.zNear, m.ratio >= options.ratioGlobal else { continue }
+                // Against near silence any noise looks like a big peak: most of the clip has to
+                // land on real reference audio.
+                let at = Int(m.lag.rounded())
+                let covered = reference[max(0, at)..<min(reference.count, at + samples.count)].reduce(0) { $1 != 0 ? $0 + 1 : $0 }
+                guard Double(covered) >= 0.6 * Double(samples.count) else { continue }
+                let time = from + m.lag / rate
+                lock.lock()
+                // Never on top of a clip from the same camera: that can't have happened.
+                let clash = clips.contains { o in
+                    o.device == clip.device && o.id != clip.id && placements[o.id]?.method.synced == true
+                        && min(time + clip.duration, placements[o.id]!.time + o.duration) - max(time, placements[o.id]!.time) > 1
+                }
+                if clash { lock.unlock(); continue }
+                placements[clip.id] = Placement(id: clip.id, time: time, method: .audioNear, z: m.z, ratio: m.ratio,
+                                                note: "entre sus vecinos")
+                found += 1
+                lock.unlock()
+            }
+        }
+        if found > 0 { log("búsqueda entre vecinos: \(found) clips más") }
+        return found
+    }
+
     // MARK: Check
 
     public struct Crosscheck {
@@ -403,10 +507,9 @@ public final class Syncer {
         placeOverlapsAside()
     }
 
-    /// For a device with no usable clock: in name order (cameras number their files as they
-    /// record), one after another from the synced clip before them, or ending at the next one.
+    /// For a device with no usable clock: in recording order (file date, then name), one after another from the synced clip before them, or ending at the next one.
     func placeByOrder(_ clip: SyncClip) -> Double? {
-        let mine = clips.filter { $0.device == clip.device }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let mine = recordingOrder(clip.device)
         guard let i = mine.firstIndex(where: { $0.id == clip.id }) else { return nil }
         // Walk back to the last clip that already has a place, adding up the ones in between.
         var gap = 0.0

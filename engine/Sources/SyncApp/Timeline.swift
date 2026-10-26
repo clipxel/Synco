@@ -107,7 +107,11 @@ struct TimelineView: View {
         let fill: Color = {
             if !clip.exists { return Theme.clipMissing }
             guard let p = model.placements[clip.fileID] else { return Theme.clipIdle }
-            return p.method.synced ? Theme.clipSynced : Theme.clipUnsynced
+            switch model.outcome?.quality(p) ?? .guessed {
+            case .exact: return Theme.clipExact
+            case .approximate: return Theme.clipApprox
+            case .guessed: return Theme.clipGuessed
+            }
         }()
         let shape = Path(roundedRect: rect, cornerRadius: Theme.Size.radiusSm)
         ctx.fill(shape, with: .color(fill.opacity(model.ignored.contains(clip.fileID) ? 0.45 : 1)))
@@ -128,7 +132,7 @@ struct TimelineView: View {
                 wave.addRect(CGRect(x: x, y: mid - h, width: 1, height: max(0.5, 2 * h)))
                 x += 1
             }
-            ctx.fill(wave, with: .color(Theme.onClip.opacity(0.55)))
+            ctx.fill(wave, with: .color(ink(clip).opacity(0.55)))
         }
 
         if hovered || selected {
@@ -137,7 +141,7 @@ struct TimelineView: View {
             ctx.stroke(shape, with: .color(Theme.trackBg.opacity(0.8)), lineWidth: 1)
         }
         if rect.width > 70 {
-            let label = Text(clip.name).font(Theme.Font.xs).foregroundColor(Theme.onClip)
+            let label = Text(clip.name).font(Theme.Font.xs).foregroundColor(ink(clip))
             let resolved = ctx.resolve(label)
             let size = resolved.measure(in: rect.size)
             if size.width + 8 < rect.width {
@@ -146,6 +150,11 @@ struct TimelineView: View {
                 ctx.draw(resolved, at: CGPoint(x: x, y: rect.minY + 10))
             }
         }
+    }
+
+    /// Dark ink on yellow clips, white on the rest.
+    private func ink(_ clip: ProjectClip) -> Color {
+        model.quality(clip.fileID) == .approximate && clip.exists ? Theme.onClipApprox : Theme.onClip
     }
 
     private func clipAt(_ p: CGPoint, rowH: CGFloat, pps: Double) -> ProjectClip? {

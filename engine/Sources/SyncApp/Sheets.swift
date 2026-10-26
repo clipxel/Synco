@@ -76,12 +76,17 @@ struct ExportSettingsSheet: View {
                     TextField("Agregar al nombre", text: $draft.sequenceSuffix)
                     Toggle("Guardar un informe (.md) junto al XML", isOn: $draft.writeReport)
                 }
-                Section("Clips sincronizados por audio") {
+                Section("Exactos: encontrados por su audio") {
                     Picker("Etiqueta de color", selection: $draft.syncedLabel) {
                         ForEach(premiereLabels, id: \.0) { Text($0.1).tag($0.0) }
                     }
                 }
-                Section("Clips ubicados por su hora o sin ubicar") {
+                Section("Aproximados: por audio, buscando cerca de su fecha y sus vecinos") {
+                    Picker("Etiqueta de color", selection: $draft.approxLabel) {
+                        ForEach(premiereLabels, id: \.0) { Text($0.1).tag($0.0) }
+                    }
+                }
+                Section("No encontrados: ubicados por fecha, hora y vecinos") {
                     Picker("Etiqueta de color", selection: $draft.unsyncedLabel) {
                         ForEach(premiereLabels, id: \.0) { Text($0.1).tag($0.0) }
                     }
