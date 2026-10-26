@@ -153,7 +153,8 @@ public final class FCP7Project {
                 let sorted = items.sorted { (int($0, "start") ?? 0) < (int($1, "start") ?? 0) }
                 let insertAt = track.children?.firstIndex { $0.kind == .element } ?? track.childCount
                 for (i, item) in sorted.enumerated() {
-                    track.insertChild(item, at: insertAt + i)
+                    // At the end it is an append: Linux's Foundation can't insert into an empty element.
+                    if insertAt + i >= track.childCount { track.addChild(item) } else { track.insertChild(item, at: insertAt + i) }
                     if let id = item.attribute(forName: "id")?.stringValue { position[id] = (t + 1, i + 1) }
                     lastFrame = max(lastFrame, int(item, "end") ?? 0)
                 }

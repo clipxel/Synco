@@ -172,12 +172,22 @@ jobs:
           branch: swift-6.1.2-release
           tag: 6.1.2-RELEASE
       - name: Motor
+        shell: pwsh
         run: |
-          engine/set_version.sh
+          bash engine/set_version.sh
           swift build -c release --package-path engine --product synccli
-          BIN=$(cygpath -u "$(swift build -c release --package-path engine --show-bin-path)")
-          echo "ENGINE_BIN=$BIN" >> "$GITHUB_ENV"
-          "$BIN/synccli.exe" --version
+          if ($LASTEXITCODE) { exit 1 }
+          $bin = swift build -c release --package-path engine --show-bin-path
+          & "$bin\synccli.exe" --version
+          if ($LASTEXITCODE) { exit 1 }
+          # The Swift runtime the engine needs (Foundation, FoundationXML, dispatch, ICU...).
+          $rt = Split-Path (Get-Command swiftCore.dll).Source
+          Write-Host "runtime: $rt"
+          $E = "desktop/src-tauri/resources/engine"
+          New-Item -ItemType Directory -Force $E | Out-Null
+          Copy-Item "$bin\synccli.exe" $E
+          Copy-Item "$rt\*.dll" $E
+          Get-ChildItem $E | Format-Table Name, Length
       - name: ffmpeg (LGPL, BtbN)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -187,23 +197,16 @@ jobs:
           gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$NAME" -O ffmpeg.zip
           7z x -off ffmpeg.zip > /dev/null
           FF=$(ls -d ff/*/ | head -1)
-          "$FF/bin/ffmpeg.exe" -hide_banner -version | head -1
-          echo "FFMPEG_DIR=$PWD/$FF" >> "$GITHUB_ENV"
-      - name: Motor con sus bibliotecas de Swift
+          cp "$FF/bin/ffmpeg.exe" desktop/src-tauri/resources/engine/
+          desktop/src-tauri/resources/engine/ffmpeg.exe -hide_banner -version | head -1
+      - name: Prueba sintética (solo con lo que va en el instalador)
+        shell: pwsh
         run: |
-          E=desktop/src-tauri/resources/engine; mkdir -p $E
-          cp "$ENGINE_BIN/synccli.exe" $E/
-          # The Swift runtime the engine needs, from wherever the toolchain put it on the PATH.
-          RT=$(dirname "$(where swiftCore.dll | head -1 | tr -d '\r')")
-          echo "runtime: $RT"
-          cp "$RT"/*.dll $E/
-          cp "$FFMPEG_DIR/bin/ffmpeg.exe" $E/
-          ls $E
-      - name: Prueba sintética (con las bibliotecas copiadas, sin el PATH de Swift)
-        run: |
-          E=$(cygpath -w "$PWD/desktop/src-tauri/resources/engine")
-          PATH="/c/Windows/System32:/c/Windows" SYNCO_FFMPEG="$E\\ffmpeg.exe" \
-            "desktop/src-tauri/resources/engine/synccli.exe" selftest "$(cygpath -w "$RUNNER_TEMP/selftest")"
+          $E = Resolve-Path "desktop/src-tauri/resources/engine"
+          $env:Path = "$E;C:\Windows\System32;C:\Windows"
+          $env:SYNCO_FFMPEG = "$E\ffmpeg.exe"
+          & "$E\synccli.exe" selftest "$env:RUNNER_TEMP\selftest"
+          if ($LASTEXITCODE) { exit 1 }
       - name: App (Tauri)
         run: |
           python - <<'PY'

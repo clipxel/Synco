@@ -113,6 +113,8 @@ public final class Syncer {
         var round = 1
         while !options.isCancelled(), matchNear(master) > 0 { round += 1; calibrateClocks() }
         while !options.isCancelled(), matchBetween(master) > 0 { calibrateClocks() }
+        while !options.isCancelled(), matchAgainstCameras() > 0 { calibrateClocks() }
+        if !options.isCancelled() { matchGroups() }
         if options.isCancelled() { return [] }
         placeByClock()
         return clips.compactMap { placements[$0.id] }
@@ -473,6 +475,201 @@ public final class Syncer {
         }
         if found > 0 { log("búsqueda entre vecinos: \(found) clips más") }
         return found
+    }
+
+    // MARK: Search against the other cameras
+
+    /// A clip the reference doesn't hear can still overlap a camera that is already placed.
+    /// Every missing clip is searched against all the synced audio of the other cameras, laid
+    /// one after another; a clear match puts it exactly where that camera says. Returns how many.
+    func matchAgainstCameras() -> Int {
+        var found = 0
+        let devices = Set(clips.map(\.device)).subtracting([referenceDevice])
+        for device in devices.sorted() where !options.isCancelled() {
+            let todo = clips.filter {
+                $0.device == device && placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > 2 * Int(rate)
+            }
+            guard !todo.isEmpty else { continue }
+            // The other cameras' synced audio, end to end with a second of silence between clips.
+            var buffer = [Float]()
+            var segments = [(offset: Int, count: Int, time: Double)]()
+            for other in clips where other.device != device && other.device != referenceDevice {
+                guard let p = placements[other.id], p.method.synced, let audio = other.audio else { continue }
+                segments.append((buffer.count, audio.samples.count, p.time))
+                buffer.append(contentsOf: audio.samples)
+                buffer.append(contentsOf: repeatElement(0, count: Int(rate)))
+            }
+            guard !segments.isEmpty else { continue }
+            let maxClip = todo.map { $0.audio!.samples.count }.max()!
+            let correlator = Correlator(reference: buffer, maxClip: maxClip, rate: rate, settings: options.match)
+            let lock = NSLock()
+            let workers = max(1, min(options.workers, todo.count, Self.workersThatFit(fftSize(atLeast: buffer.count + maxClip + 16))))
+            DispatchQueue.concurrentPerform(iterations: workers) { w in
+                for i in stride(from: w, to: todo.count, by: workers) {
+                    if options.isCancelled() { return }
+                    let clip = todo[i]
+                    let samples = clip.audio!.samples
+                    let overlap = min(samples.count / 2, Int(4 * rate))
+                    guard let m = correlator.match(samples, lags: (-samples.count + overlap)...(buffer.count - overlap)),
+                          m.z >= options.zGlobal, m.ratio >= options.ratioGlobal else { continue }
+                    // Mostly on one placed clip (not on the silence between them): where that clip is.
+                    let at = Int(m.lag.rounded())
+                    guard let seg = segments.max(by: {
+                        max(0, min(at + samples.count, $0.offset + $0.count) - max(at, $0.offset))
+                            < max(0, min(at + samples.count, $1.offset + $1.count) - max(at, $1.offset))
+                    }) else { continue }
+                    let shared = min(at + samples.count, seg.offset + seg.count) - max(at, seg.offset)
+                    guard shared >= min(samples.count / 2, Int(4 * rate)) else { continue }
+                    let time = seg.time + Double(at - seg.offset) / rate + (m.lag - Double(at)) / rate
+                    lock.lock()
+                    let clash = clips.contains { o in
+                        o.device == clip.device && o.id != clip.id && placements[o.id]?.method.synced == true
+                            && min(time + clip.duration, placements[o.id]!.time + o.duration) - max(time, placements[o.id]!.time) > 1
+                    }
+                    if !clash {
+                        var p = Placement(id: clip.id, time: time, method: .audio, z: m.z, ratio: m.ratio)
+                        p.note = "contra otra cámara"
+                        placements[clip.id] = p
+                        found += 1
+                    }
+                    lock.unlock()
+                }
+            }
+        }
+        if found > 0 { log("búsqueda contra las otras cámaras: \(found) clips más") }
+        return found
+    }
+
+    // MARK: Groups of cameras without the reference
+
+    /// Clips from different cameras that hear each other while nothing placed hears them (the
+    /// recorder was off, or there is none): matched among themselves, they form groups that
+    /// are exact inside. A group goes where its clips' dates and neighbours put it, so it is
+    /// marked approximate. Links that disagree with the rest of their group are dropped.
+    func matchGroups() {
+        let left = clips.filter { placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > 3 * Int(rate) }
+        let devices = Array(Set(left.map(\.device))).sorted()
+        guard devices.count >= 2 else { return }
+        struct Link { let a: String; let b: String; let shift: Double; let z: Float }   // b starts `shift` s after a
+        var links = [Link]()
+        let lock = NSLock()
+        for device in devices where !options.isCancelled() {
+            // This camera's missing clips end to end; the other cameras' missing clips are searched in it.
+            var buffer = [Float]()
+            var segments = [(offset: Int, count: Int, id: String)]()
+            for c in left where c.device == device {
+                segments.append((buffer.count, c.audio!.samples.count, c.id))
+                buffer.append(contentsOf: c.audio!.samples)
+                buffer.append(contentsOf: repeatElement(0, count: Int(rate)))
+            }
+            let others = left.filter { $0.device > device }   // each pair of cameras once
+            guard !others.isEmpty, !buffer.isEmpty else { continue }
+            let maxClip = others.map { $0.audio!.samples.count }.max()!
+            let correlator = Correlator(reference: buffer, maxClip: maxClip, rate: rate, settings: options.match)
+            let workers = max(1, min(options.workers, others.count, Self.workersThatFit(fftSize(atLeast: buffer.count + maxClip + 16))))
+            DispatchQueue.concurrentPerform(iterations: workers) { w in
+                for i in stride(from: w, to: others.count, by: workers) {
+                    if options.isCancelled() { return }
+                    let clip = others[i]
+                    let samples = clip.audio!.samples
+                    let overlap = min(samples.count / 2, Int(4 * rate))
+                    // Nothing anchors these: only a clearly unique peak counts.
+                    guard let m = correlator.match(samples, lags: (-samples.count + overlap)...(buffer.count - overlap)),
+                          m.z >= options.zGlobal + 1, m.ratio >= 1.5 else { continue }
+                    let at = Int(m.lag.rounded())
+                    guard let seg = segments.max(by: {
+                        max(0, min(at + samples.count, $0.offset + $0.count) - max(at, $0.offset))
+                            < max(0, min(at + samples.count, $1.offset + $1.count) - max(at, $1.offset))
+                    }) else { continue }
+                    let shared = min(at + samples.count, seg.offset + seg.count) - max(at, seg.offset)
+                    guard shared >= Int(4 * rate) else { continue }
+                    lock.lock()
+                    links.append(Link(a: seg.id, b: clip.id, shift: (m.lag - Double(seg.offset)) / rate, z: m.z))
+                    lock.unlock()
+                }
+            }
+        }
+        guard !links.isEmpty else { return }
+        // Groups: strongest links first; a link that contradicts a group already built is dropped.
+        var position = [String: Double]()   // relative to the group's first clip
+        var group = [String: Int]()
+        var members = [Int: [String]]()
+        var next = 0
+        let byID = Dictionary(uniqueKeysWithValues: clips.map { ($0.id, $0) })
+        // Two clips of one camera in a group must sit as far apart as their dates say, and not on top of each other.
+        func holds(_ ids: [String], _ at: [String: Double]) -> Bool {
+            for (i, a) in ids.enumerated() {
+                guard let ca = byID[a] else { continue }
+                for b in ids[(i + 1)...] {
+                    guard let cb = byID[b], ca.device == cb.device else { continue }
+                    let (pa, pb) = (at[a]!, at[b]!)
+                    if pa < pb + cb.duration - 0.5 && pb < pa + ca.duration - 0.5 { return false }
+                    if let da = clockPosition(ca), let db = clockPosition(cb),
+                       abs((pb - pa) - (db - da)) > options.clockTolerance { return false }
+                }
+            }
+            return true
+        }
+        for l in links.sorted(by: { $0.z > $1.z }) {
+            switch (group[l.a], group[l.b]) {
+            case (nil, nil):
+                group[l.a] = next; group[l.b] = next; position[l.a] = 0; position[l.b] = l.shift
+                members[next] = [l.a, l.b]; next += 1
+            case (let g?, nil):
+                var at = position; at[l.b] = position[l.a]! + l.shift
+                guard holds(members[g]! + [l.b], at) else { continue }
+                group[l.b] = g; position = at; members[g]!.append(l.b)
+            case (nil, let g?):
+                var at = position; at[l.a] = position[l.b]! - l.shift
+                guard holds(members[g]! + [l.a], at) else { continue }
+                group[l.a] = g; position = at; members[g]!.append(l.a)
+            case (let ga?, let gb?) where ga != gb:
+                // Merge b's group into a's, moved so the link holds.
+                let move = position[l.a]! + l.shift - position[l.b]!
+                var at = position
+                for id in members[gb]! { at[id]! += move }
+                guard holds(members[ga]! + members[gb]!, at) else { continue }
+                for id in members[gb]! { group[id] = ga }
+                position = at
+                members[ga]! += members[gb]!; members[gb] = nil
+            default:
+                continue   // same group already: kept only if it agrees, nothing to do either way
+            }
+        }
+        var placed = 0
+        for (_, ids) in members where ids.count >= 2 {
+            // Where the group goes: each clip's own best guess as a median. Between its synced
+            // neighbours, or by a calibrated clock, it is approximate; by a clock nothing
+            // checked, only the clips' places among themselves are known.
+            var trusted = [Double](), loose = [Double]()
+            for id in ids {
+                guard let c = byID[id] else { continue }
+                if let t = placeBetweenNeighbours(c) {
+                    trusted.append(t - position[id]!)
+                } else if let clock = clockPosition(c) {
+                    if let offset = deviceOffsets[c.device], !unreliableClocks.contains(c.device) {
+                        trusted.append(clock + offset - position[id]!)
+                    } else {
+                        loose.append(clock - position[id]!)
+                    }
+                }
+            }
+            let guesses = (trusted.isEmpty ? loose : trusted).sorted()
+            // Members whose own places disagree about where the group goes: one of its links is doubtful.
+            guard let first = guesses.first, let last = guesses.last, last - first <= 120 else { continue }
+            let base = guesses[guesses.count / 2]
+            let names = ids.compactMap { byID[$0].map { ($0.name as NSString).lastPathComponent } }.sorted()
+            log("grupo de \(ids.count) clips (\(trusted.isEmpty ? "por reloj sin verificar" : "por sus vecinos")): \(names.joined(separator: ", "))")
+            for id in ids {
+                var p = trusted.isEmpty
+                    ? Placement(id: id, time: base + position[id]!, method: .clock)
+                    : Placement(id: id, time: base + position[id]!, method: .audioNear, z: 0, ratio: 0)
+                p.note = "en grupo con otras cámaras"
+                placements[id] = p
+                if !trusted.isEmpty { placed += 1 }
+            }
+        }
+        if placed > 0 { log("grupos de cámaras sin la referencia: \(placed) clips") }
     }
 
     // MARK: Check
