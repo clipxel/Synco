@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>Synco</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand" aria-label="Synco"><img class="mark" src="mark-white.png" alt=""><img class="word" src="wordmark-white.png" alt="Synco"></div>
+    <div class="sep"></div>
+    <div id="title" class="meta">sincroniza cámaras y grabadores por el audio</div>
+    <div class="spacer"></div>
+    <button class="link" id="instagram" title="Instagram: novedades, dudas y pedidos">
+      <svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/></svg>@nanobrunetti
+    </button>
+    <button class="pill" id="donate" title="Synco es gratis y siempre lo va a ser. Tu aporte ayuda a seguir mejorándolo.">♥ Donar</button>
+    <button class="icon" id="settings" title="Ajustes generales"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+  </header>
+
+  <section class="actions">
+    <button class="btn primary" id="open" title="Abrir XML (Ctrl+O)">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg>Abrir XML</button>
+    <span class="chev">›</span>
+    <div class="counter zero" id="c-cams"><b>0</b><span>cámaras</span></div>
+    <div class="counter zero" id="c-recs"><b>0</b><span>grabadores</span></div>
+    <div class="counter zero" id="c-clips"><b>0</b><span>clips</span></div>
+    <span class="chev">›</span>
+    <button class="icon" id="sync-settings" title="Ajustes de sincronización"><svg class="i" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
+    <button class="btn" id="sync" disabled title="Sincronizar (Ctrl+R)">
+      <svg class="i" viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10"/></svg><span>Sincronizar</span></button>
+    <span class="chev">›</span>
+    <div class="counter big zero" id="c-exact" title="Encontrados por su audio"><b>0</b><span>exactos</span></div>
+    <div class="counter big zero" id="c-approx" title="Encontrados por su audio, buscando cerca de su fecha y sus vecinos: conviene mirarlos"><b>0</b><span>aproximados</span></div>
+    <div class="counter big zero" id="c-guessed" title="Sin audio en común: ubicados por fecha, hora y vecinos"><b>0</b><span>sin encontrar</span></div>
+    <div class="spacer"></div>
+    <button class="icon" id="export-settings" title="Ajustes de exportación"><svg class="i" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
+    <button class="btn" id="export" disabled title="Exportar (Ctrl+E)">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 15V3m0 0-4 4m4-4 4 4M5 21h14"/></svg>Exportar</button>
+  </section>
+
+  <section class="status">
+    <span class="light" id="l-read"><i></i>lectura</span>
+    <span class="light" id="l-match"><i></i>búsqueda</span>
+    <progress id="progress" hidden></progress>
+    <span class="msg" id="message">Abrí o soltá un XML exportado de Premiere, Resolve o Vegas.</span>
+    <button class="link warn" id="missing" hidden></button>
+    <button class="link" id="report" hidden>Ver informe</button>
+  </section>
+
+  <main class="main">
+    <div class="zoombar" id="zoombar" hidden>
+      <span id="scale"></span>
+      <button class="icon" id="zoom-out" title="Alejar (Ctrl+−)">−</button>
+      <button class="icon" id="zoom-in" title="Acercar (Ctrl++)">+</button>
+      <button class="icon" id="zoom-fit" title="Ver todo (Ctrl+0)">↔</button>
+    </div>
+    <div class="timeline" id="timeline" hidden>
+      <div class="heads" id="heads"></div>
+      <div class="lanes" id="lanes"><canvas id="canvas"></canvas><div class="tip" id="tip" hidden></div></div>
+    </div>
+    <div class="overview" id="overview" hidden><i id="overview-thumb"></i></div>
+    <div class="empty" id="empty">
+      <svg class="i" viewBox="0 0 24 24" style="width:44px;height:44px;color:var(--muted)"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12M10 11v6M7 14h6"/></svg>
+      <h2>Soltá acá el XML de tu línea de tiempo</h2>
+      <p>En Premiere: Archivo › Exportar › Final Cut Pro XML. Una pista por cámara o grabador, con los clips sin ordenar.</p>
+      <button class="btn primary" id="open-empty">Elegir archivo…</button>
+      <div class="recents" id="recents"></div>
+    </div>
+  </main>
+
+  <footer class="inspector" id="inspector">
+    <span class="muted">Hacé clic en un clip para ver cómo se ubicó. Arrastrá para moverte; Ctrl + rueda o los botones para acercar.</span>
+  </footer>
+
+  <div id="veil" class="veil" hidden></div>
+
+  <script src="backend.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

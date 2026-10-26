@@ -10,3 +10,7 @@ engine/brand/AppIcon.iconset/
 .DS_Store
 .claude/
 engine/.build-portable/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/resources/engine/*
+!desktop/src-tauri/resources/engine/.gitkeep

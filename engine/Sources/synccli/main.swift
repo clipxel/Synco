@@ -24,6 +24,11 @@ if args.count >= 2, args[1] == "serve" {
     Server(cache: cache, rate: rate).run()
 }
 if args.count >= 2, args[1] == "--version" { print(engineVersion); exit(0) }
+if args.count >= 3, args[1] == "selftest" {
+    let folder = URL(fileURLWithPath: args[2])
+    let ok = try Selftest.run(folder: folder, cache: AudioCache(dir: folder.appendingPathComponent("cache")))
+    exit(ok ? 0 : 1)
+}
 guard args.count >= 3 else { usage() }
 
 switch args[1] {

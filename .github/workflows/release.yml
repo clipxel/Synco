@@ -1,91 +1,272 @@
-# Compila Synco (app universal: Apple silicon e Intel) y la prueba.
-# Con un tag v* (o a mano: Actions › Publicar versión › Run) además crea el release, sube el .dmg
-# y el update.json que las copias instaladas leen para actualizarse solas.
+# Compila Synco para macOS, Windows y Linux, y los prueba.
+# Con un tag v* (o a mano: Actions › Publicar versión › Run) además crea el release, sube los
+# instaladores y el update.json que las copias instaladas leen para actualizarse solas.
 # Un push a main solo compila y prueba: no toca ningún release.
 name: Publicar versión
 
 on:
   push:
     tags: ["v*"]
-    branches: [main]
-    paths: ["engine/**", ".github/workflows/release.yml"]
+    branches: [main, multiplataforma]
+    paths: ["engine/**", "desktop/**", ".github/workflows/release.yml"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag del release donde subir el instalador"
+        description: "Tag del release donde subir los instaladores"
         required: true
         default: "v1.0.0"
 
 permissions:
   contents: write
 
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  PUBLISH: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
-  build:
-    runs-on: macos-15
-    env:
-      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  release:
+    name: Crear el release
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
-      - name: Versión
-        run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
-
       - name: El tag coincide con engine/VERSION
         if: startsWith(github.ref, 'refs/tags/')
-        run: '[ "$TAG" = "v$VERSION" ] || { echo "El tag $TAG no coincide con engine/VERSION ($VERSION)"; exit 1; }'
+        run: '[ "$TAG" = "v$(cat engine/VERSION)" ] || { echo "El tag $TAG no coincide con engine/VERSION"; exit 1; }'
+      - name: Release
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          NOTES=".github/release-notes/$TAG.md"
+          [ -f "$NOTES" ] || { echo "Synco $(cat engine/VERSION)" > notes.md; NOTES=notes.md; }
+          # GitHub a veces responde 5xx al crear un release: reintentar.
+          for i in 1 2 3 4; do
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Synco $(cat engine/VERSION)" --notes-file "$NOTES" --verify-tag && exit 0
+            sleep 15
+          done
+          exit 1
 
+  mac:
+    name: macOS
+    needs: release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versión
+        run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
       - name: Compilar (universal)
         run: UNIVERSAL=1 engine/make_app.sh
-
       - name: Probar
         run: |
           lipo -archs Synco.app/Contents/MacOS/Synco          # arm64 x86_64
           codesign --verify --deep Synco.app
           swift build -c release --package-path engine --product synccli
-          # La app abre, dibuja su ventana y se cierra sola.
+          engine/.build/release/synccli selftest "$RUNNER_TEMP/selftest"
           ( Synco.app/Contents/MacOS/Synco --snapshot shot.png --quit & PID=$!; sleep 60; kill $PID 2>/dev/null || true ) || true
           [ -s shot.png ] && echo "ventana OK"
-
       - name: Empaquetar
         run: |
           mkdir -p dmg && cp -R Synco.app dmg/ && ln -s /Applications dmg/Aplicaciones
-          # hdiutil a veces falla con "Resource busy" en los runners: reintentar.
           for i in 1 2 3 4 5; do
             hdiutil create -volname "Synco $VERSION" -srcfolder dmg -fs HFS+ -format UDZO -ov "Synco-$VERSION-macOS-universal.dmg" && break
             sleep 10
           done
           [ -f "Synco-$VERSION-macOS-universal.dmg" ]
-          # Copia con nombre fijo: el botón de la página siempre baja la última.
           cp "Synco-$VERSION-macOS-universal.dmg" Synco-macOS.dmg
+      - name: Subir
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "Synco-$VERSION-macOS-universal.dmg" Synco-macOS.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Synco-${{ env.VERSION }}
-          path: Synco-${{ env.VERSION }}-macOS-universal.dmg
-
-      - name: Subir al release
-        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+  linux:
+    name: Linux
+    needs: release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versión
+        run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
+      - name: Swift
+        run: |
+          curl -fsSL -o swift.tgz https://download.swift.org/swift-6.1.2-release/ubuntu2204/swift-6.1.2-RELEASE/swift-6.1.2-RELEASE-ubuntu22.04.tar.gz
+          mkdir -p "$RUNNER_TEMP/swift" && tar -xzf swift.tgz -C "$RUNNER_TEMP/swift" --strip-components=1
+          echo "$RUNNER_TEMP/swift/usr/bin" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev libxml2-dev libz3-dev libncurses5 \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libxdo-dev xvfb file
+      - name: Motor
+        run: |
+          engine/set_version.sh
+          swift build -c release --package-path engine --product synccli --static-swift-stdlib
+          engine/.build/release/synccli --version
+      - name: ffmpeg (LGPL, BtbN)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            NOTES=".github/release-notes/$TAG.md"
-            [ -f "$NOTES" ] || { echo "Synco $VERSION" > notes.md; NOTES=notes.md; }
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Synco $VERSION" --notes-file "$NOTES" --verify-tag
-          fi
-          gh release upload "$TAG" "Synco-$VERSION-macOS-universal.dmg" Synco-macOS.dmg --clobber --repo "$GITHUB_REPOSITORY"
+          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n7\.[0-9]+-latest-linux64-lgpl-7\.[0-9]+\.tar\.xz$' | head -1)
+          echo "ffmpeg: $NAME"
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$NAME" -O ffmpeg.tar.xz
+          mkdir ff && tar -xJf ffmpeg.tar.xz -C ff --strip-components=1
+          ./ff/bin/ffmpeg -hide_banner -version | head -1
+          echo "FFMPEG_DIR=$PWD/ff" >> "$GITHUB_ENV"
+      - name: Prueba sintética
+        run: SYNCO_FFMPEG="$FFMPEG_DIR/bin/ffmpeg" engine/.build/release/synccli selftest "$RUNNER_TEMP/selftest"
+      - name: App (Tauri)
+        run: |
+          python3 - <<'PY'
+          import json, os
+          p = "desktop/src-tauri/tauri.conf.json"; c = json.load(open(p)); c["version"] = os.environ["VERSION"]
+          json.dump(c, open(p, "w"), indent=2, ensure_ascii=False)
+          PY
+          E=desktop/src-tauri/resources/engine; mkdir -p $E
+          cp engine/.build/release/synccli $E/ && cp "$FFMPEG_DIR/bin/ffmpeg" $E/
+          cp "$FFMPEG_DIR/LICENSE.txt" $E/ffmpeg-LICENSE.txt 2>/dev/null || true
+          cd desktop && npx --yes @tauri-apps/cli@2 build --bundles appimage,deb
+      - name: Probar la app empaquetada
+        run: |
+          APP=$(ls desktop/src-tauri/target/release/bundle/appimage/*.AppImage)
+          chmod +x "$APP"
+          cp "$RUNNER_TEMP/selftest/selftest.xml" "$RUNNER_TEMP/selftest/smoke.xml"
+          export APPIMAGE_EXTRACT_AND_RUN=1 SYNCO_SMOKE="$RUNNER_TEMP/selftest/smoke.xml" SYNCO_SMOKE_OUT="$RUNNER_TEMP/smoke.json"
+          timeout 600 xvfb-run -a "$APP" || { echo "la app falló o no terminó"; cat "$RUNNER_TEMP/smoke.json" 2>/dev/null; exit 1; }
+          cat "$RUNNER_TEMP/smoke.json"
+          grep -q '"ok":true' "$RUNNER_TEMP/smoke.json"
+          [ -s "$RUNNER_TEMP/selftest/smoke - smoke.xml" ]
+      - name: Empaquetar
+        run: |
+          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage "Synco-$VERSION-Linux-x86_64.AppImage"
+          cp desktop/src-tauri/target/release/bundle/deb/*.deb "Synco-$VERSION-Linux-amd64.deb"
+          cp "Synco-$VERSION-Linux-x86_64.AppImage" Synco-Linux.AppImage
+          cp "Synco-$VERSION-Linux-amd64.deb" Synco-Linux.deb
+          ls -la Synco-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: Synco-${{ env.VERSION }}-Linux-*
+      - name: Subir
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" Synco-*.AppImage Synco-*.deb --clobber --repo "$GITHUB_REPOSITORY"
 
-          # Manifiesto de actualización: versión, novedades y SHA-256 del instalador.
+  windows:
+    name: Windows
+    needs: release
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Versión
+        run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
+      - uses: compnerd/gha-setup-swift@main
+        with:
+          branch: swift-6.1.2-release
+          tag: 6.1.2-RELEASE
+      - name: Motor
+        run: |
+          engine/set_version.sh
+          swift build -c release --package-path engine --product synccli
+          engine/.build/release/synccli.exe --version
+      - name: ffmpeg (LGPL, BtbN)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n7\.[0-9]+-latest-win64-lgpl-7\.[0-9]+\.zip$' | head -1)
+          echo "ffmpeg: $NAME"
+          gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$NAME" -O ffmpeg.zip
+          7z x -off ffmpeg.zip > /dev/null
+          FF=$(ls -d ff/*/ | head -1)
+          "$FF/bin/ffmpeg.exe" -hide_banner -version | head -1
+          echo "FFMPEG_DIR=$PWD/$FF" >> "$GITHUB_ENV"
+      - name: Motor con sus bibliotecas de Swift
+        run: |
+          E=desktop/src-tauri/resources/engine; mkdir -p $E
+          cp engine/.build/release/synccli.exe $E/
+          # The Swift runtime the engine needs, from wherever the toolchain put it on the PATH.
+          RT=$(dirname "$(where swiftCore.dll | head -1 | tr -d '\r')")
+          echo "runtime: $RT"
+          cp "$RT"/*.dll $E/
+          cp "$FFMPEG_DIR/bin/ffmpeg.exe" $E/
+          ls $E
+      - name: Prueba sintética (con las bibliotecas copiadas, sin el PATH de Swift)
+        run: |
+          E=$(cygpath -w "$PWD/desktop/src-tauri/resources/engine")
+          PATH="/c/Windows/System32:/c/Windows" SYNCO_FFMPEG="$E\\ffmpeg.exe" \
+            "desktop/src-tauri/resources/engine/synccli.exe" selftest "$(cygpath -w "$RUNNER_TEMP/selftest")"
+      - name: App (Tauri)
+        run: |
+          python - <<'PY'
+          import json, os
+          p = "desktop/src-tauri/tauri.conf.json"; c = json.load(open(p, encoding="utf-8")); c["version"] = os.environ["VERSION"]
+          json.dump(c, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+          PY
+          cd desktop && npx --yes @tauri-apps/cli@2 build --bundles nsis
+      - name: Instalar y probar la app instalada
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Start-Process -FilePath $setup.FullName -ArgumentList '/S' -Wait
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Synco\*.exe" | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1
+          if (-not $exe) { Get-ChildItem -Recurse "$env:LOCALAPPDATA\Synco" | Select-Object -First 30; throw "no se instaló" }
+          Write-Host "instalada: $($exe.FullName)"
+          Copy-Item "$env:RUNNER_TEMP\selftest\selftest.xml" "$env:RUNNER_TEMP\selftest\smoke.xml"
+          $env:SYNCO_SMOKE = "$env:RUNNER_TEMP\selftest\smoke.xml"
+          $env:SYNCO_SMOKE_OUT = "$env:RUNNER_TEMP\smoke.json"
+          $p = Start-Process -FilePath $exe.FullName -PassThru
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); throw "la app no terminó" }
+          Get-Content "$env:RUNNER_TEMP\smoke.json"
+          if (-not (Select-String -Path "$env:RUNNER_TEMP\smoke.json" -Pattern '"ok":true' -Quiet)) { throw "la prueba falló" }
+          if (-not (Test-Path "$env:RUNNER_TEMP\selftest\smoke - smoke.xml")) { throw "no exportó" }
+      - name: Empaquetar
+        run: |
+          cp desktop/src-tauri/target/release/bundle/nsis/*.exe "Synco-$VERSION-Windows-Setup.exe"
+          cp "Synco-$VERSION-Windows-Setup.exe" Synco-Windows-Setup.exe
+          ls -la Synco-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: Synco-${{ env.VERSION }}-Windows-Setup.exe
+      - name: Subir
+        if: env.PUBLISH == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" Synco-*-Setup.exe --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Manifiesto de actualización: versión, novedades y SHA-256 de cada instalador.
+  update-manifest:
+    name: update.json
+    needs: [mac, linux, windows]
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Armar y subir update.json
+        run: |
+          VERSION=$(cat engine/VERSION)
+          mkdir assets && cd assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "Synco-$VERSION-*"
           python3 - "$VERSION" "$TAG" "$GITHUB_REPOSITORY" <<'PY'
-          import hashlib, json, subprocess, sys
+          import hashlib, json, os, subprocess, sys
           version, tag, repo = sys.argv[1:4]
-          f = f"Synco-{version}-macOS-universal.dmg"
-          data = open(f, "rb").read()
           notes = subprocess.run(["gh", "release", "view", tag, "--repo", repo, "--json", "body", "-q", ".body"],
                                  capture_output=True, text=True).stdout.strip()
-          json.dump({"version": version, "notes": notes[:4000], "assets": {"mac": {
-              "file": f, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
-              "url": f"https://github.com/{repo}/releases/download/{tag}/{f}"}}}, open("update.json", "w"), indent=1)
+          kinds = {"macOS-universal.dmg": "mac", "Windows-Setup.exe": "windows", "Linux-x86_64.AppImage": "linux"}
+          assets = {}
+          for f in sorted(os.listdir(".")):
+              for suffix, kind in kinds.items():
+                  if f.endswith(suffix):
+                      data = open(f, "rb").read()
+                      assets[kind] = {"file": f, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                                      "url": f"https://github.com/{repo}/releases/download/{tag}/{f}"}
+          json.dump({"version": version, "notes": notes[:4000], "assets": assets}, open("update.json", "w"), indent=1)
+          print(json.dumps(assets, indent=1))
+          missing = {"mac", "windows", "linux"} - set(assets)
+          sys.exit(f"faltan: {missing}" if missing else 0)
           PY
-          cat update.json
           gh release upload "$TAG" update.json --clobber --repo "$GITHUB_REPOSITORY"

@@ -88,7 +88,7 @@ public final class FCP7Project {
             if let path = file.elements(forName: "pathurl").first?.stringValue,
                let url = URL(string: path) {
                 let name = file.elements(forName: "name").first?.stringValue ?? url.lastPathComponent
-                paths[id] = (name, URL(fileURLWithPath: url.path))
+                paths[id] = (name, localFile(url))
             }
             if file.elements(forName: "media").first?.elements(forName: "video").first != nil
                 || tracks("video").contains(where: { $0 == item.parent }) { video.insert(id) }
@@ -102,7 +102,7 @@ public final class FCP7Project {
                 guard let id = file.attribute(forName: "id")?.stringValue, paths[id] == nil,
                       let path = file.elements(forName: "pathurl").first?.stringValue, let url = URL(string: path) else { continue }
                 let name = file.elements(forName: "name").first?.stringValue ?? url.lastPathComponent
-                paths[id] = (name, URL(fileURLWithPath: url.path))
+                paths[id] = (name, localFile(url))
             }
         }
         for id in order {
@@ -286,4 +286,16 @@ public final class FCP7Project {
             labels.addChild(XMLElement(name: "label2", stringValue: label))
         }
     }
+}
+
+/// A file URL from an editor's XML as a local file. On Windows Premiere writes
+/// "file://localhost/C%3a/Users/...": the path comes back as "/C:/Users/..." and loses its slash.
+func localFile(_ url: URL) -> URL {
+    var path = url.path
+    #if os(Windows)
+    if path.count > 2, path.first == "/", path.dropFirst().first?.isLetter == true, path.dropFirst(2).first == ":" {
+        path.removeFirst()
+    }
+    #endif
+    return URL(fileURLWithPath: path)
 }
