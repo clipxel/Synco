@@ -362,6 +362,7 @@ final class AppModel: ObservableObject {
                     self.message = String(format: "%d de %d clips sincronizados por audio en %.0f s. Verificación: %d de %d pares a 1 cuadro o menos.",
                                           outcome.synced, outcome.placements.count, outcome.seconds, agreed, outcome.checks.count)
                     if !outcome.overlaps.isEmpty { self.message += " \(outcome.overlaps.count) solape(s) a revisar." }
+                    if let warning = outcome.warnings.first { self.message = "⚠️ " + warning + " · " + self.message }
                     if self.prefs.soundWhenDone { NSSound(named: "Glass")?.play() }
                 case .failure(let error):
                     if error is SyncCancelled {

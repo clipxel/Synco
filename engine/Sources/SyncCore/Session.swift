@@ -59,12 +59,19 @@ public struct SyncOutcome {
     public let seconds: Double
     /// Clips whose place another camera confirmed directly, to a frame or better.
     public let confirmed: Set<String>
+    /// The reference was an audio recorder (its files' times are trustworthy), not a camera.
+    public let referenceIsRecorder: Bool
+    /// Things the user should know before trusting the result.
+    public let warnings: [String]
 
     public var synced: Int { placements.filter { $0.method.synced }.count }
 
     public func quality(_ p: Placement) -> SyncQuality {
         switch p.method {
-        case .reference, .audio: return .exact
+        case .audio: return .exact
+        // A recorder's files are placed by their exact start times; a camera's by its file dates,
+        // which can be export times: only blue when another camera confirms them.
+        case .reference: return referenceIsRecorder || confirmed.contains(p.id) ? .exact : .guessed
         case .audioNear: return confirmed.contains(p.id) ? .exact : .approximate
         case .clock, .unplaced: return .guessed
         }
@@ -144,12 +151,28 @@ public final class SyncSession {
         }
 
         let fps = Double(project.fps)
-        let origin = result.filter { $0.method != .unplaced }.map(\.time).min() ?? 0
+        let byID = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.fileID, $0) })
+        // The reference (the recorder) stays exactly where it is on the editor's timeline and
+        // everything is laid out around it; only if something would land before the start of
+        // the sequence does the whole thing move later, together.
+        let reference = syncer.referenceDevice
+        let referenceClips = project.clips.filter { $0.device == reference }
+        let referenceIsRecorder = !referenceClips.isEmpty && !referenceClips.contains { $0.hasVideo }
+        let originalStarts = project.mediaStarts()
+        var origin = result.filter { $0.method != .unplaced }.map(\.time).min() ?? 0
+        var anchorFrame = 0
+        if let first = result.filter({ byID[$0.id]?.device == reference && $0.method == .reference }).min(by: { $0.time < $1.time }),
+           let was = originalStarts[first.id] {
+            origin = first.time
+            anchorFrame = Int((was * fps).rounded())
+        }
         var starts = [String: Int]()
         for p in result where p.method != .unplaced {
-            starts[p.id] = Int(((p.time - origin) * fps).rounded())
+            starts[p.id] = anchorFrame + Int(((p.time - origin) * fps).rounded())
         }
-        let byID = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.fileID, $0) })
+        if let lowest = starts.values.min(), lowest < 0 {
+            for k in starts.keys { starts[k]! -= lowest }
+        }
         var end = 0
         for p in result where p.method == .unplaced {
             // Nothing to go on: after everything else, one after another.
@@ -173,8 +196,24 @@ public final class SyncSession {
         // Confirmed: checked against another camera to a frame or better (and their copies with them).
         var confirmed = Set(checks.filter { ($0.error.map { abs($0) * Double(project.fps) <= 1 }) ?? false }.flatMap { [$0.a, $0.b] })
         for (copy, original) in twinOf where confirmed.contains(original) { confirmed.insert(copy) }
+        // Say so when there was no recorder to sync against: a camera made a poor reference.
+        var warnings = [String]()
+        let audioOnly = Dictionary(grouping: project.clips.filter { !$0.hasVideo }, by: \.device)
+            .mapValues { $0.reduce(0) { $0 + duration($1) } }
+        if !referenceIsRecorder {
+            let name = referenceClips.first.map { "\($0.track) · \(($0.folder as NSString).lastPathComponent)" } ?? reference
+            if let longest = audioOnly.values.max() {
+                warnings.append(String(format: "Ninguna pista de solo audio cubre el evento (la más larga suma %@): se usó la cámara %@ "
+                    + "como referencia. Si faltan los archivos del grabador en la secuencia, agregalos y volvé a exportar el XML.",
+                    formatSeconds(longest), name))
+            } else {
+                warnings.append("No hay un grabador en la secuencia: se usó la cámara \(name) como referencia. "
+                    + "Sus clips solo quedan en azul si otra cámara los confirma.")
+            }
+        }
         return SyncOutcome(placements: result, starts: starts, checks: checks, overlaps: overlaps,
-                           seconds: Date().timeIntervalSince(started), confirmed: confirmed)
+                           seconds: Date().timeIntervalSince(started), confirmed: confirmed,
+                           referenceIsRecorder: referenceIsRecorder, warnings: warnings)
     }
 
     /// Copies of one recording on the same device (an original and the version converted for
@@ -238,6 +277,7 @@ public final class SyncSession {
         let within2 = checks.filter { ($0.error.map { abs($0) * fps > 1 && abs($0) * fps <= 2 }) ?? false }
         let disagreed = checks.filter { ($0.error.map { abs($0) * fps > 2 }) ?? false }
         var md = "# Sincronización: \(project.sequenceName)\n\n"
+        for w in outcome.warnings { md += "> ⚠️ \(w)\n\n" }
         md += String(format: "**%d de %d clips sincronizados por audio (%.1f %%)**. Tiempo: %.0f s.\n\n",
                      outcome.synced, count, 100 * Double(outcome.synced) / Double(max(count, 1)), outcome.seconds)
         let q = Dictionary(grouping: result, by: { outcome.quality($0) })
@@ -274,4 +314,8 @@ public final class SyncSession {
         }
         return md
     }
+}
+
+func formatSeconds(_ s: Double) -> String {
+    s < 60 ? String(format: "%.0f s", s) : (s < 3600 ? String(format: "%.0f min", s / 60) : String(format: "%.1f h", s / 3600))
 }

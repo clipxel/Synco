@@ -87,7 +87,7 @@ public final class Syncer {
 
     var placements = [String: Placement]()
     var wallStart = Date()
-    var referenceDevice = ""
+    public private(set) var referenceDevice = ""
     var deviceOffsets = [String: Double]()
     /// Devices whose file date marks when recording stopped, not when it started.
     public private(set) var clockAtEnd = Set<String>()

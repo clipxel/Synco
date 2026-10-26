@@ -10,6 +10,7 @@ if [ -z "$SDKROOT" ] && [ ! -d /Applications/Xcode.app ]; then
 fi
 [ -n "$SDKROOT" ] && echo "SDK: $SDKROOT"
 VERSION=${VERSION:-$(cat VERSION)}
+./set_version.sh
 # UNIVERSAL=1: Apple silicon and Intel in one app (needs Xcode, as on the release runner).
 if [ -n "$UNIVERSAL" ]; then
   swift build -c release --product SyncApp --arch arm64 --arch x86_64

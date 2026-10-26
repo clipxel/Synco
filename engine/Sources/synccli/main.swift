@@ -11,6 +11,8 @@ func usage() -> Never {
     uso:
       synccli sync <entrada.xml> <salida.xml> [informe.md]   sincroniza un proyecto de Premiere (FCP 7 XML)
       synccli pair <referencia> <clip>                       prueba una sola comparación
+      synccli serve                                          motor para la app de Windows y Linux (JSON por stdin/stdout)
+      synccli selftest <carpeta>                             proyecto sintético con desfases conocidos: tiene que dar exacto
       synccli times <proyecto.xml>                           hora de grabación de cada archivo (metadatos vs archivo)
       synccli check <sincronizado.xml> [etiqueta]            juzga un XML ya sincronizado (de cualquier app):
                                                              compara el audio de cada par de clips superpuestos
@@ -18,6 +20,10 @@ func usage() -> Never {
     exit(2)
 }
 
+if args.count >= 2, args[1] == "serve" {
+    Server(cache: cache, rate: rate).run()
+}
+if args.count >= 2, args[1] == "--version" { print(engineVersion); exit(0) }
 guard args.count >= 3 else { usage() }
 
 switch args[1] {
