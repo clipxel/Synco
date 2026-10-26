@@ -9,3 +9,4 @@ engine/brand/AppIcon.iconset/
 *.f32
 .DS_Store
 .claude/
+engine/.build-portable/

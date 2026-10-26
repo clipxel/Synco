@@ -66,42 +66,7 @@ struct Pixels {
     }
 }
 
-// 1. App icon: flood the near-white outside from the corners; the rounded square stops it.
-var icon = Pixels("originales/icono-app.png")
-func whiteness(_ p: (Int, Int, Int, Int)) -> Int { min(p.0, p.1, p.2) }
-var outside = [Bool](repeating: false, count: icon.w * icon.h)
-var stack = [(0, 0), (icon.w - 1, 0), (0, icon.h - 1), (icon.w - 1, icon.h - 1)]
-while let (x, y) = stack.popLast() {
-    guard x >= 0, y >= 0, x < icon.w, y < icon.h, !outside[y * icon.w + x] else { continue }
-    let p = icon.px(x, y)
-    // The tile is off-white (warm); the backdrop is pure white and neutral.
-    guard whiteness(p) >= 248, abs(p.0 - p.2) <= 4 else { continue }
-    outside[y * icon.w + x] = true
-    stack += [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
-}
-for y in 0..<icon.h { for x in 0..<icon.w where outside[y * icon.w + x] {
-    let p = icon.px(x, y); icon.set(x, y, p.0, p.1, p.2, 0)
-} }
-// Soften the cut: pixels next to the outside fade by how white they are.
-for y in 1..<(icon.h - 1) { for x in 1..<(icon.w - 1) where !outside[y * icon.w + x] {
-    let n = outside[y * icon.w + x - 1] || outside[y * icon.w + x + 1] || outside[(y - 1) * icon.w + x] || outside[(y + 1) * icon.w + x]
-    if n { let p = icon.px(x, y); icon.set(x, y, p.0, p.1, p.2, max(0, min(255, (255 - whiteness(p)) * 8))) }
-} }
-// macOS draws icons on an 824-point tile inside 1024 (the rest is room for the shadow): crop
-// the artwork to its own tile, base included, and scale it to that size so it sits like any other app.
-var minX = icon.w, minY = icon.h, maxX = 0, maxY = 0
-for y in 0..<icon.h { for x in 0..<icon.w where icon.px(x, y).3 > 8 {
-    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
-} }
-let tile = Pixels(w: maxX - minX + 1, h: maxY - minY + 1, from: icon, x0: minX, y0: minY)
-icon = tile.fitted(in: 1024, box: 824)
-print("ícono: el cuadrado ocupaba \(maxX - minX + 1)×\(maxY - minY + 1) de 1024; ahora llena 824")
-icon.save("icon-1024.png")
-let set = "AppIcon.iconset"
-try? FileManager.default.createDirectory(atPath: set, withIntermediateDirectories: true)
-for (base, scale) in [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2), (256, 1), (256, 2), (512, 1), (512, 2)] {
-    icon.save("\(set)/icon_\(base)x\(base)\(scale == 2 ? "@2x" : "").png", size: base * scale)
-}
+// 1. The app icon: see make_icon.swift.
 
 // 2. White on black (right half of the positive/negative sheet): brightness becomes opacity.
 let sheet = Pixels("originales/positivo-negativo.png")

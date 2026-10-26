@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 
 /// One media file in the project and every timeline item that uses it
 /// (a video item plus its audio channel items, linked together).

@@ -184,7 +184,7 @@ public final class Syncer {
     /// ten bytes per FFT point (its spectrum, weights and correlation); a third of the RAM is the budget.
     static func workersThatFit(_ n: Int) -> Int {
         let budget = Double(ProcessInfo.processInfo.physicalMemory) / 3
-        return max(1, Int(budget / (Double(n) * 10)))
+        return max(1, Int(budget / (Double(n) * bytesPerFFTPoint)))
     }
 
     // MARK: Clocks

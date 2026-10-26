@@ -1,6 +1,8 @@
+import Foundation
+#if canImport(AVFoundation) && !SYNCO_PORTABLE
 import Accelerate
 import AVFoundation
-import Foundation
+#endif
 
 /// Mono audio of one media file, resampled to a low analysis rate.
 public struct AudioTrack {
@@ -28,6 +30,7 @@ public enum MediaError: Error, CustomStringConvertible {
     }
 }
 
+#if canImport(AVFoundation) && !SYNCO_PORTABLE
 /// Decodes every audio track of a file, mixed to mono, at `rate` Hz.
 /// AVFoundation only mixes: it decodes at the file's own sample rate, because
 /// its resampler is not exact (at 8 kHz it stretches time by about 50 ppm,
@@ -80,6 +83,125 @@ public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
     return AudioTrack(samples: interpolate(decimator.output, from: decimated, to: rate), rate: rate)
 }
 
+#else
+
+/// Decodes every audio stream of a file, mixed to mono, at `rate` Hz, with ffmpeg (bundled
+/// next to the app on Windows and Linux). It decodes at the file's own sample rate, like the
+/// macOS path, and the same filter and decimation take it down from there.
+public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
+    let info = FFmpeg.probe(url)
+    guard info.audioStreams > 0 else { throw MediaError.noAudio(url) }
+    let native = info.sampleRate > 0 ? info.sampleRate : 48000
+    var args = ["-v", "error", "-nostdin", "-i", url.path]
+    if info.audioStreams > 1 {
+        let inputs = (0..<info.audioStreams).map { "[0:a:\($0)]" }.joined()
+        args += ["-filter_complex", "\(inputs)amix=inputs=\(info.audioStreams):normalize=0[a]", "-map", "[a]"]
+    } else {
+        args += ["-map", "0:a:0"]
+    }
+    args += ["-ac", "1", "-ar", String(Int(native)), "-f", "f32le", "-"]
+    let factor = max(1, Int(native / rate))
+    let decimator = Decimator(factor: factor)
+    try FFmpeg.stream(args) { chunk in decimator.push(chunk) }
+    let decimated = native / Double(factor)
+    guard abs(decimated - rate) > 1e-9 else { return AudioTrack(samples: decimator.output, rate: rate) }
+    return AudioTrack(samples: interpolate(decimator.output, from: decimated, to: rate), rate: rate)
+}
+
+/// The bundled ffmpeg: what a file holds, and its audio as raw samples.
+enum FFmpeg {
+    struct Info { var audioStreams = 0; var sampleRate = 0.0; var creation: Date? }
+
+    static var executable: URL {
+        let env = ProcessInfo.processInfo.environment
+        if let path = env["SYNCO_FFMPEG"] { return URL(fileURLWithPath: path) }
+        #if os(Windows)
+        let name = "ffmpeg.exe"
+        #else
+        let name = "ffmpeg"
+        #endif
+        let here = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+        for dir in [here, here.appendingPathComponent("ffmpeg")] {
+            let candidate = dir.appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
+        }
+        return URL(fileURLWithPath: name)   // on the PATH
+    }
+
+    private static let lock = NSLock()
+    private static var cache = [String: Info]()
+
+    /// Reads the stream list ffmpeg prints for a file ("Stream #0:1: Audio: aac, 48000 Hz, ...").
+    static func probe(_ url: URL) -> Info {
+        lock.lock()
+        if let hit = cache[url.path] { lock.unlock(); return hit }
+        lock.unlock()
+        var info = Info()
+        let text = (try? run(["-hide_banner", "-nostdin", "-i", url.path], stderrOnly: true)) ?? ""
+        for line in text.split(separator: "\n") {
+            if line.contains("Stream #"), line.contains("Audio:") {
+                info.audioStreams += 1
+                if let r = line.range(of: #"(\d+) Hz"#, options: .regularExpression) {
+                    info.sampleRate = max(info.sampleRate, Double(line[r].split(separator: " ")[0]) ?? 0)
+                }
+            } else if info.creation == nil, line.contains("creation_time"),
+                      let v = line.split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) {
+                let f = ISO8601DateFormatter()
+                f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+                info.creation = f.date(from: v) ?? ISO8601DateFormatter().date(from: v)
+            }
+        }
+        lock.lock(); cache[url.path] = info; lock.unlock()
+        return info
+    }
+
+    @discardableResult
+    static func run(_ args: [String], stderrOnly: Bool = false) throws -> String {
+        let p = Process()
+        p.executableURL = executable
+        p.arguments = args
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = stderrOnly ? FileHandle.nullDevice : err
+        try p.run()
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// Runs ffmpeg writing float32 samples to stdout, handing them over in blocks.
+    static func stream(_ args: [String], _ body: ([Float]) -> Void) throws {
+        let p = Process()
+        p.executableURL = executable
+        p.arguments = args
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        var carry = Data()
+        while true {
+            let data = out.fileHandleForReading.availableData
+            if data.isEmpty { break }
+            carry.append(data)
+            let usable = carry.count - carry.count % 4
+            guard usable >= 1 << 16 else { continue }
+            let block = carry.prefix(usable).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+            carry.removeFirst(usable)
+            body(block)
+        }
+        if carry.count >= 4 {
+            let usable = carry.count - carry.count % 4
+            body(carry.prefix(usable).withUnsafeBytes { Array($0.bindMemory(to: Float.self)) })
+        }
+        let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            throw MediaError.readFailed(URL(fileURLWithPath: args.last ?? ""), message.split(separator: "\n").last.map(String.init) ?? "ffmpeg")
+        }
+    }
+}
+#endif
+
 /// Streaming low-pass (windowed sinc, cut at 90% of the decimated rate's Nyquist)
 /// followed by keeping every `factor`th sample.
 final class Decimator {
@@ -109,9 +231,22 @@ final class Decimator {
         let count = (pending.count - taps) / factor + 1
         let start = output.count
         output.append(contentsOf: repeatElement(0, count: count))
+#if canImport(Accelerate) && !SYNCO_PORTABLE
         output.withUnsafeMutableBufferPointer { out in
             vDSP_desamp(pending, vDSP_Stride(factor), filter, out.baseAddress! + start, vDSP_Length(count), vDSP_Length(taps))
         }
+#else
+        pending.withUnsafeBufferPointer { a in
+            filter.withUnsafeBufferPointer { f in
+                for i in 0..<count {
+                    var sum: Float = 0
+                    let base = i * factor
+                    for k in 0..<taps { sum += a[base + k] * f[k] }
+                    output[start + i] = sum
+                }
+            }
+        }
+#endif
         pending.removeFirst(count * factor)
     }
 }
@@ -176,7 +311,9 @@ public func recordingStart(url: URL) -> Date? {
     startLock.lock()
     if let cached = startCache[key] { startLock.unlock(); return cached }
     startLock.unlock()
-    let fileDate = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate
+    // Linux keeps no creation date: the modification date stands in.
+    let values = try? url.resourceValues(forKeys: [.creationDateKey, .contentModificationDateKey])
+    let fileDate = values?.creationDate ?? values?.contentModificationDate
     var date: Date?
     switch url.pathExtension.lowercased() {
     case "wav", "bwf": date = broadcastStart(url: url, near: fileDate)
@@ -258,8 +395,13 @@ func broadcastStart(url: URL, near fileDate: Date?) -> Date? {
 
 /// The creation date a camera or phone wrote inside a QuickTime / MP4 file.
 func quickTimeCreation(url: URL) -> Date? {
+#if canImport(AVFoundation) && !SYNCO_PORTABLE
     let asset = AVURLAsset(url: url)
     guard let date = asset.creationDate?.dateValue,
           date.timeIntervalSince1970 > 946_684_800 else { return nil } // ignore unset clocks (before 2000)
     return date
+#else
+    guard let date = FFmpeg.probe(url).creation, date.timeIntervalSince1970 > 946_684_800 else { return nil }
+    return date
+#endif
 }

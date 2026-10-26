@@ -1,7 +1,17 @@
-import Accelerate
 import Foundation
 
-/// Smallest length vDSP's real DFT accepts that is >= n: f * 2^k with f in {1, 3, 5, 15}.
+#if canImport(Accelerate) && !SYNCO_PORTABLE
+import Accelerate
+#else
+import PocketFFT
+#endif
+
+/// The FFT and vector maths behind the matcher. On macOS they are Accelerate's; elsewhere
+/// (Windows, Linux, or a macOS build with -DSYNCO_PORTABLE to compare) pocketfft and plain
+/// loops, in the same packed layout. The scale of either transform cancels out: matches are
+/// judged by how far a peak stands above the noise, not by its height.
+
+/// Smallest length both transforms handle quickly that is >= n: f * 2^k with f in {1, 3, 5, 15}.
 func fftSize(atLeast n: Int) -> Int {
     var best = Int.max
     for f in [1, 3, 5, 15] {
@@ -12,10 +22,21 @@ func fftSize(atLeast n: Int) -> Int {
     return best
 }
 
+/// Bytes of memory one correlation needs per FFT point (spectra, weights, result).
+#if canImport(Accelerate) && !SYNCO_PORTABLE
+let bytesPerFFTPoint = 10.0
+#else
+let bytesPerFFTPoint = 26.0
+#endif
+
 final class FFTPlan {
     let n: Int
+#if canImport(Accelerate) && !SYNCO_PORTABLE
     let forward: vDSP_DFT_Setup
     let inverse: vDSP_DFT_Setup
+#else
+    let plan: rfft_plan
+#endif
 
     private static var plans = [Int: FFTPlan]()
     private static let lock = NSLock()
@@ -30,12 +51,16 @@ final class FFTPlan {
 
     private init(n: Int) {
         self.n = n
+#if canImport(Accelerate) && !SYNCO_PORTABLE
         forward = vDSP_DFT_zrop_CreateSetup(nil, vDSP_Length(n), .FORWARD)!
         inverse = vDSP_DFT_zrop_CreateSetup(forward, vDSP_Length(n), .INVERSE)!
+#else
+        plan = make_rfft_plan(n)!
+#endif
     }
 }
 
-/// Half spectrum in vDSP's packed layout: re[0] is DC, im[0] is Nyquist.
+/// Half spectrum in packed layout: re[0] is DC, im[0] is Nyquist.
 struct Spectrum {
     var re: [Float]
     var im: [Float]
@@ -46,6 +71,7 @@ func spectrum(of x: UnsafeBufferPointer<Float>, plan: FFTPlan) -> Spectrum {
     var re = [Float](repeating: 0, count: half)
     var im = [Float](repeating: 0, count: half)
     let count = min(x.count, plan.n)
+#if canImport(Accelerate) && !SYNCO_PORTABLE
     // Deinterleave x into even/odd samples, which is the real DFT's input format.
     re.withUnsafeMutableBufferPointer { r in
         im.withUnsafeMutableBufferPointer { i in
@@ -57,7 +83,72 @@ func spectrum(of x: UnsafeBufferPointer<Float>, plan: FFTPlan) -> Spectrum {
             vDSP_DFT_Execute(plan.forward, r.baseAddress!, i.baseAddress!, r.baseAddress!, i.baseAddress!)
         }
     }
+#else
+    // pocketfft's real transform works in place, in FFTPACK order: r0, r1, i1, r2, i2, ..., r(n/2).
+    var buffer = [Double](repeating: 0, count: plan.n)
+    for k in 0..<count { buffer[k] = Double(x[k]) }
+    buffer.withUnsafeMutableBufferPointer { _ = rfft_forward(plan.plan, $0.baseAddress!, 1) }
+    re[0] = Float(buffer[0])
+    im[0] = Float(buffer[plan.n - 1])
+    for k in 1..<half {
+        re[k] = Float(buffer[2 * k - 1])
+        im[k] = Float(buffer[2 * k])
+    }
+#endif
     return Spectrum(re: re, im: im)
+}
+
+/// Back from a packed half spectrum to `n` real samples (the cross-correlation).
+func realSignal(from s: inout Spectrum, plan: FFTPlan) -> [Float] {
+    let n = plan.n, half = n / 2
+    var out = [Float](repeating: 0, count: n)
+#if canImport(Accelerate) && !SYNCO_PORTABLE
+    s.re.withUnsafeMutableBufferPointer { cr in
+        s.im.withUnsafeMutableBufferPointer { ci in
+            vDSP_DFT_Execute(plan.inverse, cr.baseAddress!, ci.baseAddress!, cr.baseAddress!, ci.baseAddress!)
+            out.withUnsafeMutableBufferPointer { o in
+                o.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { c in
+                    var split = DSPSplitComplex(realp: cr.baseAddress!, imagp: ci.baseAddress!)
+                    vDSP_ztoc(&split, 1, c, 2, vDSP_Length(half))
+                }
+            }
+        }
+    }
+#else
+    var buffer = [Double](repeating: 0, count: n)
+    buffer[0] = Double(s.re[0])
+    buffer[n - 1] = Double(s.im[0])
+    for k in 1..<half {
+        buffer[2 * k - 1] = Double(s.re[k])
+        buffer[2 * k] = Double(s.im[k])
+    }
+    buffer.withUnsafeMutableBufferPointer { _ = rfft_backward(plan.plan, $0.baseAddress!, 1) }
+    for k in 0..<n { out[k] = Float(buffer[k]) }
+#endif
+    return out
+}
+
+/// v[k] = v[k]^e, in place.
+func raise(_ v: inout [Float], to e: Float) {
+#if canImport(Accelerate) && !SYNCO_PORTABLE
+    var exponent = e
+    var count = Int32(v.count)
+    v.withUnsafeMutableBufferPointer { m in vvpowsf(m.baseAddress!, &exponent, m.baseAddress!, &count) }
+#else
+    for k in v.indices { v[k] = powf(v[k], e) }
+#endif
+}
+
+func mean(_ v: [Float]) -> Float {
+#if canImport(Accelerate) && !SYNCO_PORTABLE
+    var m: Float = 0
+    vDSP_meanv(v, 1, &m, vDSP_Length(v.count))
+    return m
+#else
+    var sum = 0.0
+    for x in v { sum += Double(x) }
+    return v.isEmpty ? 0 : Float(sum / Double(v.count))
+#endif
 }
 
 /// One candidate alignment: the clip starts `lag` samples after the reference starts.
@@ -115,45 +206,24 @@ public final class Correlator {
         let lowBin = max(1, Int(settings.lowHz * Double(n) / rate))
         let highBin = min(half - 1, Int(settings.highHz * Double(n) / rate))
         var mag = [Float](repeating: 0, count: half)
-        reference.re.withUnsafeBufferPointer { rr in
-            reference.im.withUnsafeBufferPointer { ri in
-                c.re.withUnsafeMutableBufferPointer { cr in
-                    c.im.withUnsafeMutableBufferPointer { ci in
-                        for k in 0..<half {
-                            let a = rr[k], b = ri[k], x = cr[k], y = ci[k]
-                            let re = a * x + b * y
-                            let im = b * x - a * y
-                            cr[k] = re
-                            ci[k] = im
-                            mag[k] = re * re + im * im
-                        }
-                        var exponent = settings.phatBeta / 2
-                        var count = Int32(half)
-                        mag.withUnsafeMutableBufferPointer { m in
-                            vvpowsf(m.baseAddress!, &exponent, m.baseAddress!, &count)
-                        }
-                        var mean: Float = 0
-                        vDSP_meanv(mag, 1, &mean, vDSP_Length(half))
-                        let eps = mean * 1e-3 + 1e-30
-                        for k in 0..<half {
-                            let w: Float = (k >= lowBin && k <= highBin) ? 1 / (mag[k] + eps) : 0
-                            cr[k] *= w
-                            ci[k] *= w
-                        }
-                        cr[0] = 0
-                        ci[0] = 0
-                        vDSP_DFT_Execute(plan.inverse, cr.baseAddress!, ci.baseAddress!, cr.baseAddress!, ci.baseAddress!)
-                    }
-                }
-            }
+        for k in 0..<half {
+            let a = reference.re[k], b = reference.im[k], x = c.re[k], y = c.im[k]
+            let re = a * x + b * y
+            let im = b * x - a * y
+            c.re[k] = re
+            c.im[k] = im
+            mag[k] = re * re + im * im
         }
-        var corr = [Float](repeating: 0, count: n)
-        corr.withUnsafeMutableBufferPointer { out in
-            out.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) { o in
-                var split = DSPSplitComplex(realp: &c.re, imagp: &c.im)
-                vDSP_ztoc(&split, 1, o, 2, vDSP_Length(half))
-            }
+        raise(&mag, to: settings.phatBeta / 2)
+        let eps = mean(mag) * 1e-3 + 1e-30
+        for k in 0..<half {
+            let w: Float = (k >= lowBin && k <= highBin) ? 1 / (mag[k] + eps) : 0
+            c.re[k] *= w
+            c.im[k] *= w
         }
+        c.re[0] = 0
+        c.im[0] = 0
+        let corr = realSignal(from: &c, plan: plan)
         mag = []
         c = Spectrum(re: [], im: [])
 
