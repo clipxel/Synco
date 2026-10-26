@@ -178,16 +178,21 @@ jobs:
           swift build -c release --package-path engine --product synccli
           if ($LASTEXITCODE) { exit 1 }
           $bin = swift build -c release --package-path engine --show-bin-path
-          & "$bin\synccli.exe" --version
-          if ($LASTEXITCODE) { exit 1 }
-          # The Swift runtime the engine needs (Foundation, FoundationXML, dispatch, ICU...).
-          $rt = Split-Path (Get-Command swiftCore.dll).Source
+          # The Swift runtime the engine needs (Foundation, FoundationXML, dispatch, ICU...):
+          # on the PATH if the toolchain put it there, else in the installed runtimes.
+          $core = Get-Command swiftCore.dll -ErrorAction SilentlyContinue
+          if ($core) { $rt = Split-Path $core.Source } else {
+            $rt = Split-Path (Get-ChildItem "$env:LOCALAPPDATA\Programs\Swift\Runtimes" -Recurse -Filter swiftCore.dll | Select-Object -First 1).FullName
+          }
           Write-Host "runtime: $rt"
           $E = "desktop/src-tauri/resources/engine"
           New-Item -ItemType Directory -Force $E | Out-Null
           Copy-Item "$bin\synccli.exe" $E
           Copy-Item "$rt\*.dll" $E
           Get-ChildItem $E | Format-Table Name, Length
+          & "$E\synccli.exe" --version
+          Write-Host "exit: $LASTEXITCODE"
+          if ($LASTEXITCODE) { exit 1 }
       - name: ffmpeg (LGPL, BtbN)
         env:
           GH_TOKEN: ${{ github.token }}
