@@ -1,0 +1,11 @@
+# Planning notes, analysis and screenshots of another app: private, never published.
+replica/
+# Local outputs and builds.
+out/
+dist/
+Synco.app
+engine/.build/
+engine/brand/AppIcon.iconset/
+*.f32
+.DS_Store
+.claude/

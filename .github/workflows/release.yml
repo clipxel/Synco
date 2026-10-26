@@ -1,0 +1,91 @@
+# Compila Synco (app universal: Apple silicon e Intel) y la prueba.
+# Con un tag v* (o a mano: Actions › Publicar versión › Run) además crea el release, sube el .dmg
+# y el update.json que las copias instaladas leen para actualizarse solas.
+# Un push a main solo compila y prueba: no toca ningún release.
+name: Publicar versión
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths: ["engine/**", ".github/workflows/release.yml"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag del release donde subir el instalador"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versión
+        run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
+
+      - name: El tag coincide con engine/VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: '[ "$TAG" = "v$VERSION" ] || { echo "El tag $TAG no coincide con engine/VERSION ($VERSION)"; exit 1; }'
+
+      - name: Compilar (universal)
+        run: UNIVERSAL=1 engine/make_app.sh
+
+      - name: Probar
+        run: |
+          lipo -archs Synco.app/Contents/MacOS/Synco          # arm64 x86_64
+          codesign --verify --deep Synco.app
+          swift build -c release --package-path engine --product synccli
+          # La app abre, dibuja su ventana y se cierra sola.
+          ( Synco.app/Contents/MacOS/Synco --snapshot shot.png --quit & PID=$!; sleep 60; kill $PID 2>/dev/null || true ) || true
+          [ -s shot.png ] && echo "ventana OK"
+
+      - name: Empaquetar
+        run: |
+          mkdir -p dmg && cp -R Synco.app dmg/ && ln -s /Applications dmg/Aplicaciones
+          # hdiutil a veces falla con "Resource busy" en los runners: reintentar.
+          for i in 1 2 3 4 5; do
+            hdiutil create -volname "Synco $VERSION" -srcfolder dmg -fs HFS+ -format UDZO -ov "Synco-$VERSION-macOS-universal.dmg" && break
+            sleep 10
+          done
+          [ -f "Synco-$VERSION-macOS-universal.dmg" ]
+          # Copia con nombre fijo: el botón de la página siempre baja la última.
+          cp "Synco-$VERSION-macOS-universal.dmg" Synco-macOS.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Synco-${{ env.VERSION }}
+          path: Synco-${{ env.VERSION }}-macOS-universal.dmg
+
+      - name: Subir al release
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            NOTES=".github/release-notes/$TAG.md"
+            [ -f "$NOTES" ] || { echo "Synco $VERSION" > notes.md; NOTES=notes.md; }
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Synco $VERSION" --notes-file "$NOTES" --verify-tag
+          fi
+          gh release upload "$TAG" "Synco-$VERSION-macOS-universal.dmg" Synco-macOS.dmg --clobber --repo "$GITHUB_REPOSITORY"
+
+          # Manifiesto de actualización: versión, novedades y SHA-256 del instalador.
+          python3 - "$VERSION" "$TAG" "$GITHUB_REPOSITORY" <<'PY'
+          import hashlib, json, subprocess, sys
+          version, tag, repo = sys.argv[1:4]
+          f = f"Synco-{version}-macOS-universal.dmg"
+          data = open(f, "rb").read()
+          notes = subprocess.run(["gh", "release", "view", tag, "--repo", repo, "--json", "body", "-q", ".body"],
+                                 capture_output=True, text=True).stdout.strip()
+          json.dump({"version": version, "notes": notes[:4000], "assets": {"mac": {
+              "file": f, "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+              "url": f"https://github.com/{repo}/releases/download/{tag}/{f}"}}}, open("update.json", "w"), indent=1)
+          PY
+          cat update.json
+          gh release upload "$TAG" update.json --clobber --repo "$GITHUB_REPOSITORY"
