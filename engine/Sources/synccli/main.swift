@@ -1,7 +1,12 @@
 import Foundation
 import SyncCore
 
+#if os(Windows)
+// Microsoft's C library has no line buffering (and stops the program when asked for it with no size).
+setvbuf(stdout, nil, _IONBF, 0)
+#else
 setvbuf(stdout, nil, _IOLBF, 0)
+#endif
 let args = CommandLine.arguments
 let rate = 4000.0
 let cache = AudioCache(dir: ProcessInfo.processInfo.environment["SYNCO_CACHE"].map { URL(fileURLWithPath: $0) } ?? defaultCacheDir)
