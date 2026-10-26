@@ -115,6 +115,11 @@ final class AppModel: ObservableObject {
 
     nonisolated static let peaksPerSecond = 10.0
 
+    /// Command-line test runs (any "--" argument) read the user's settings but never write them,
+    /// even if they are cut off halfway.
+    private let persist = !CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
+        && !ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("SYNCO_UPDATE") }
+
     init() {
         // Settings saved while the app still had its provisional name come along.
         let saved = UserDefaults.standard.data(forKey: "prefs")
@@ -124,9 +129,17 @@ final class AppModel: ObservableObject {
         } else {
             prefs = AppPrefs()
         }
+        // One-time fix: test runs of 1.0.0 and 1.0.1 could leave "disable unsynced clips" on
+        // without the user choosing it. Unsynced clips stay enabled (with their colour) by default.
+        if persist, UserDefaults.standard.integer(forKey: "prefsFixes") < 1 {
+            prefs.export.disableUnsynced = false
+            savePrefs()
+            UserDefaults.standard.set(1, forKey: "prefsFixes")
+        }
     }
 
     private func savePrefs() {
+        guard persist else { return }
         if let data = try? JSONEncoder().encode(prefs) { UserDefaults.standard.set(data, forKey: "prefs") }
     }
 

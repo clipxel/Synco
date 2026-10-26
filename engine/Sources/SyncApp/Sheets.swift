@@ -86,6 +86,8 @@ struct ExportSettingsSheet: View {
                         ForEach(premiereLabels, id: \.0) { Text($0.1).tag($0.0) }
                     }
                     Toggle("Deshabilitarlos en la línea de tiempo", isOn: $draft.disableUnsynced)
+                    Text("Apagado (lo normal): quedan habilitados, marcados solo con su color.")
+                        .font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
                 }
             }
         }
