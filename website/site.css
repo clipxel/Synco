@@ -23,7 +23,7 @@ body {
   font: 17px/1.6 var(--body);
   -webkit-font-smoothing: antialiased;
 }
-img { max-width: 100%; display: block; }
+img { max-width: 100%; height: auto; display: block; }
 a { color: inherit; }
 .wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
 
