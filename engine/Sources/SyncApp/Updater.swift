@@ -4,11 +4,13 @@ import Foundation
 
 /// Self-update. On launch Synco reads the latest release's update.json (version + SHA-256 of the
 /// installer, written by the release workflow). If it is newer, the user is offered "Actualizar
-/// ahora / Más tarde". "Now" downloads the .dmg, checks its SHA-256, copies the new app out of it,
+/// ahora / Más tarde" in Synco's own card (UpdateCard). "Now" downloads the .dmg, checks its SHA-256, copies the new app out of it,
 /// and a small script swaps it in once Synco quits and opens the new version. Nothing to do by hand.
 @MainActor
 final class Updater: ObservableObject {
     enum State: Equatable { case idle, checking, upToDate, available, downloading, ready, failed(String) }
+    /// What the download is doing right now, for the card.
+    enum Step: Equatable { case downloading, verifying, installing }
 
     struct Info: Equatable {
         var version, notes, url, sha256, file: String
@@ -20,6 +22,9 @@ final class Updater: ObservableObject {
     @Published private(set) var state = State.idle
     @Published private(set) var info: Info?
     @Published private(set) var progress = 0.0
+    @Published private(set) var step = Step.downloading
+    /// The update card is on screen.
+    @Published var showCard = false
 
     /// Tests point this at a local file (SYNCO_UPDATE_MANIFEST); the app at the latest release.
     var manifestURL: URL {
@@ -78,24 +83,27 @@ final class Updater: ObservableObject {
             if let found = data.flatMap(Self.parse), Self.compare(found.version, Contact.version) > 0 {
                 info = found
                 state = .available
-                // Scripted update test: no dialog, straight to the download.
-                if ProcessInfo.processInfo.environment["SYNCO_UPDATE_AUTO"] != nil { download() } else { offer(found) }
+                // Scripted update test: no card, straight to the download.
+                if ProcessInfo.processInfo.environment["SYNCO_UPDATE_AUTO"] != nil { download() } else { showCard = true }
             } else {
                 state = .upToDate
-                if !quiet { tell("Synco está al día", "Tenés la última versión (\(Contact.version)).") }
+                if !quiet { showCard = true }
             }
         }
     }
 
-    private func offer(_ found: Info) {
-        let alert = NSAlert()
-        alert.messageText = "Hay una versión nueva de Synco: \(found.version)"
-        let notes = found.notes.trimmingCharacters(in: .whitespacesAndNewlines)
-        alert.informativeText = (notes.isEmpty ? "" : String(notes.prefix(600)) + "\n\n")
-            + "Tenés la \(Contact.version). Se descarga, se verifica y se reemplaza sola: no hace falta reinstalar."
-        alert.addButton(withTitle: "Actualizar ahora")
-        alert.addButton(withTitle: "Más tarde")
-        if alert.runModal() == .alertFirstButtonReturn { download() }
+    /// For screenshots of the card mid-download (scripted runs only).
+    func preview(step: Step, progress: Double) {
+        state = .downloading
+        self.step = step
+        self.progress = progress
+        showCard = true
+    }
+
+    /// "Más tarde" / "Listo": the card goes away until the next launch (or a manual check).
+    func dismiss() {
+        guard state != .downloading, state != .ready else { return }
+        showCard = false
     }
 
     // MARK: Download, verify, stage
@@ -103,28 +111,55 @@ final class Updater: ObservableObject {
     func download() {
         guard let info, state == .available || state.isFailure else { return }
         state = .downloading
+        step = .downloading
         progress = 0
         let work = self.work
         Task {
             do {
-                let app = try await Self.fetchAndStage(info, work: work) { p in
-                    Task { @MainActor in self.progress = p }
+                let app = try await Self.fetchAndStage(info, work: work) { step, p in
+                    Task { @MainActor in self.step = step; self.progress = p }
                 }
                 staged = app
                 state = .ready
+                step = .installing
+                progress = 1
+                // A moment on screen so "Instalando" is seen, then the swap.
+                try? await Task.sleep(nanoseconds: 700_000_000)
                 installAndRelaunch(relaunch: ProcessInfo.processInfo.environment["SYNCO_UPDATE_AUTO"] == nil)
             } catch {
-                state = .failed("\(error)")
-                tell("No se pudo actualizar", "\(error)\n\nPodés bajar la versión nueva desde la página de Synco.")
+                state = .failed(Self.explain(error))
             }
         }
+    }
+
+    /// What went wrong, in plain words (the details go to the console).
+    nonisolated static func explain(_ error: Error) -> String {
+        NSLog("Synco update: %@", "\(error)")
+        if let f = error as? Failure { return f.description.prefix(1).uppercased() + f.description.dropFirst() + "." }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorNotConnectedToInternet, NSURLErrorNetworkConnectionLost: return "No hay conexión a internet."
+            case NSURLErrorTimedOut: return "La descarga tardó demasiado."
+            default: return "No se pudo descargar la versión nueva."
+            }
+        }
+        if ns.domain == NSCocoaErrorDomain {
+            switch ns.code {
+            case NSFileNoSuchFileError, NSFileReadNoSuchFileError: return "No se encontró el archivo de la versión nueva."
+            case NSFileWriteOutOfSpaceError: return "No hay espacio libre en el disco."
+            case NSFileWriteNoPermissionError: return "No hay permiso para reemplazar la app."
+            default: break
+            }
+        }
+        return "Algo falló al preparar la versión nueva."
     }
 
     struct Failure: Error, CustomStringConvertible {
         let description: String
     }
 
-    nonisolated static func fetchAndStage(_ info: Info, work: URL, progress: @escaping (Double) -> Void) async throws -> URL {
+    nonisolated static func fetchAndStage(_ info: Info, work: URL, progress: @escaping (Step, Double) -> Void) async throws -> URL {
         let fm = FileManager.default
         try? fm.removeItem(at: work)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
@@ -133,11 +168,28 @@ final class Updater: ObservableObject {
         if source.isFileURL {
             try fm.copyItem(at: source, to: dmg)
         } else {
-            let (tmp, response) = try await URLSession.shared.download(from: source)
+            // Streamed to disk in chunks so the card can show real progress.
+            let (bytes, response) = try await URLSession.shared.bytes(from: source)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw Failure(description: "la descarga falló") }
-            try fm.moveItem(at: tmp, to: dmg)
+            let total = max(Int(response.expectedContentLength), info.size, 1)
+            fm.createFile(atPath: dmg.path, contents: nil)
+            let out = try FileHandle(forWritingTo: dmg)
+            defer { try? out.close() }
+            var buffer = Data()
+            buffer.reserveCapacity(1 << 18)
+            var written = 0
+            for try await byte in bytes {
+                buffer.append(byte)
+                if buffer.count >= 1 << 18 {
+                    try out.write(contentsOf: buffer)
+                    written += buffer.count
+                    buffer.removeAll(keepingCapacity: true)
+                    progress(.downloading, min(1, Double(written) / Double(total)))
+                }
+            }
+            try out.write(contentsOf: buffer)
         }
-        progress(0.7)
+        progress(.verifying, 1)
         let data = try Data(contentsOf: dmg, options: .mappedIfSafe)
         let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         guard hash == info.sha256 else { throw Failure(description: "el archivo descargado no coincide con el publicado") }
@@ -149,7 +201,6 @@ final class Updater: ObservableObject {
         defer { _ = try? run("/usr/bin/hdiutil", ["detach", mount.path, "-force"]) }
         let staged = work.appendingPathComponent("Synco.app")
         try run("/usr/bin/ditto", [mount.appendingPathComponent("Synco.app").path, staged.path])
-        progress(1)
         return staged
     }
 
@@ -164,7 +215,10 @@ final class Updater: ObservableObject {
         try p.run()
         p.waitUntilExit()
         let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        guard p.terminationStatus == 0 else { throw Failure(description: "\((tool as NSString).lastPathComponent): \(text)") }
+        guard p.terminationStatus == 0 else {
+            NSLog("Synco update: %@ failed: %@", tool, text)
+            throw Failure(description: "no se pudo abrir la versión descargada")
+        }
         return text
     }
 
@@ -199,12 +253,6 @@ final class Updater: ObservableObject {
 
     private func shellQuote(_ s: String) -> String { "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-    private func tell(_ title: String, _ text: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = text
-        alert.runModal()
-    }
 }
 
 extension Updater.State {

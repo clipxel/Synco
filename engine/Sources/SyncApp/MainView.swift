@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 
 struct MainView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var updater: Updater
     @State private var dropTargeted = false
 
     var body: some View {
@@ -35,6 +36,10 @@ struct MainView: View {
             }
             return true
         }
+        .overlay {
+            if updater.showCard { UpdateCard() }
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: updater.showCard)
         .sheet(isPresented: $model.showSyncSettings) { SyncSettingsSheet() }
         .sheet(isPresented: $model.showExportSettings) { ExportSettingsSheet() }
         .sheet(isPresented: $model.showPathFixer) { PathFixerSheet() }
@@ -256,10 +261,11 @@ struct EmptyState: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 460)
             ActionButton(title: "Elegir archivo…", systemImage: "folder", primary: true) { model.chooseFile() }
-            if !model.prefs.recents.isEmpty {
+            let recents = model.prefs.recents.filter { FileManager.default.fileExists(atPath: $0) }
+            if !recents.isEmpty {
                 VStack(alignment: .leading, spacing: Theme.Size.space1) {
                     Text("Recientes").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
-                    ForEach(model.prefs.recents, id: \.self) { path in
+                    ForEach(recents, id: \.self) { path in
                         Button {
                             model.open(URL(fileURLWithPath: path))
                         } label: {

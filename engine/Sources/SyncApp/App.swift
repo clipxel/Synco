@@ -11,11 +11,12 @@ struct SyncoApp: App {
         Window("Synco", id: "main") {
             MainView()
                 .environmentObject(model)
+                .environmentObject(updater)
                 .frame(minWidth: 1100, minHeight: 640)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     delegate.model = model
-                    Scripted.run(model)
+                    Scripted.run(model, updater: updater)
                     // A few seconds after opening, quietly look for a new version (not in test runs,
                     // except the update test itself).
                     let env = ProcessInfo.processInfo.environment

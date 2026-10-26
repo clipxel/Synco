@@ -6,7 +6,7 @@ import SwiftUI
 /// The snapshot is the app's own window drawn to a PNG (no screen recording involved).
 @MainActor
 enum Scripted {
-    static func run(_ model: AppModel) {
+    static func run(_ model: AppModel, updater: Updater) {
         let args = CommandLine.arguments
         func value(_ flag: String) -> String? {
             args.firstIndex(of: flag).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
@@ -52,6 +52,18 @@ enum Scripted {
             if let path = value("--export") {
                 model.export(to: URL(fileURLWithPath: path))
                 print("synco: \(model.message)")
+            }
+            // Update card: --check-update shows it (manifest from SYNCO_UPDATE_MANIFEST);
+            // --update-download then presses "Actualizar ahora".
+            if args.contains("--check-update") {
+                updater.check(quiet: false)
+                await waitWhile { updater.state == .checking }
+                if args.contains("--update-download") {
+                    updater.download()
+                    await waitWhile { updater.state == .downloading }
+                }
+                if let p = value("--update-progress").flatMap(Double.init) { updater.preview(step: .downloading, progress: p) }
+                print("synco: actualización \(updater.state)")
             }
             if let path = value("--snapshot") {
                 try? await Task.sleep(nanoseconds: 800_000_000)
