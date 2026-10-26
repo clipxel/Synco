@@ -94,6 +94,9 @@ public final class Syncer {
     /// Devices whose file dates say nothing about when they recorded.
     public private(set) var unreliableClocks = Set<String>()
 
+    /// Devices with no picture (console, recorders): preferred as the reference.
+    public var soundOnly = Set<String>()
+
     public init(clips: [SyncClip], rate: Double, options: SyncOptions = SyncOptions(), log: @escaping (String) -> Void) {
         self.clips = clips
         self.rate = rate
@@ -125,7 +128,17 @@ public final class Syncer {
     func buildReference() -> [Float] {
         var totals = [String: Double]()
         for c in clips where c.audio != nil { totals[c.device, default: 0] += c.duration }
-        referenceDevice = totals.max { $0.value < $1.value }?.key ?? ""
+        // A camera as reference is laid out by its own file dates, so they have to be recording times.
+        // Of the devices whose dates make sense, the one with the most audio; only if none do,
+        // the one with the most audio anyway.
+        let plausible = totals.filter { datesArePlausible($0.key) }
+        // The long sound-only recording (the console, a recorder) is always the base when there
+        // is one: everything else is placed against it.
+        let console = totals.filter { soundOnly.contains($0.key) && $0.value >= 300 }
+        referenceDevice = (!console.isEmpty ? console : plausible.isEmpty ? totals : plausible).max { $0.value < $1.value }?.key ?? ""
+        if !plausible.isEmpty, let biggest = totals.max(by: { $0.value < $1.value })?.key, biggest != referenceDevice {
+            log("\((biggest as NSString).lastPathComponent): sus fechas no son de grabación (los clips se pisan entre sí); no se usa de referencia")
+        }
         let refs = clips.filter { $0.device == referenceDevice && $0.audio != nil }
             .sorted { ($0.recordedAt ?? .distantPast, $0.name) < ($1.recordedAt ?? .distantPast, $1.name) }
         wallStart = refs.first?.recordedAt ?? Date()
@@ -150,6 +163,22 @@ public final class Syncer {
             previousEnd = r.recordedAt.map { $0.addingTimeInterval(r.duration) }
         }
         return master
+    }
+
+    /// Whether a device's file dates can be when it recorded: one camera can't start a clip
+    /// before the previous one ended. Exports and copies carry the time they were written, a
+    /// few seconds apart, and fail this. Files sharing one time (parts of a split take) are skipped.
+    func datesArePlausible(_ device: String) -> Bool {
+        let mine = clips.filter { $0.device == device && $0.recordedAt != nil }.sorted { $0.recordedAt! < $1.recordedAt! }
+        var fits = 0, total = 0
+        for (a, b) in zip(mine, mine.dropFirst()) {
+            let gap = b.recordedAt!.timeIntervalSince(a.recordedAt!)
+            guard gap > 0.5 else { continue }
+            total += 1
+            // Dated at the start (the gap holds the earlier clip) or at the end (it holds the later one).
+            if gap >= a.duration - 2 || gap >= b.duration - 2 { fits += 1 }
+        }
+        return total == 0 || Double(fits) >= 0.8 * Double(total)
     }
 
     // MARK: Global search
@@ -494,7 +523,12 @@ public final class Syncer {
 
     func placeByClock() {
         for clip in clips where placements[clip.id] == nil {
-            if unreliableClocks.contains(clip.device), let t = placeByOrder(clip) {
+            // Only for clips their audio didn't place: between the synced clip recorded before
+            // and the one recorded after, in proportion to its own time between theirs. Whether
+            // the camera's clock is right doesn't matter, only the times relative to each other.
+            if let t = placeBetweenNeighbours(clip) {
+                placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "entre sus vecinos, por su hora")
+            } else if unreliableClocks.contains(clip.device), let t = placeByOrder(clip) {
                 placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "por orden (reloj no confiable)")
             } else if let clock = clockPosition(clip) {
                 let offset = deviceOffsets[clip.device] ?? 0
@@ -505,6 +539,23 @@ public final class Syncer {
             }
         }
         placeOverlapsAside()
+    }
+
+    func placeBetweenNeighbours(_ clip: SyncClip) -> Double? {
+        guard let mine = clip.recordedAt else { return nil }
+        let order = recordingOrder(clip.device)
+        guard let i = order.firstIndex(where: { $0.id == clip.id }) else { return nil }
+        let synced = { (c: SyncClip) in self.placements[c.id]?.method.synced == true && c.recordedAt != nil }
+        guard let before = order[..<i].last(where: synced), let after = order[(i + 1)...].first(where: synced),
+              let p = placements[before.id], let n = placements[after.id] else { return nil }
+        let span = after.recordedAt!.timeIntervalSince(before.recordedAt!)
+        guard span > 0 else { return nil }
+        let share = min(1, max(0, mine.timeIntervalSince(before.recordedAt!) / span))
+        var t = p.time + share * (n.time - p.time)
+        // Not on top of its neighbours when there is room between them.
+        let lo = p.time + before.duration, hi = n.time - clip.duration
+        if hi >= lo { t = min(max(t, lo), hi) }
+        return t
     }
 
     /// For a device with no usable clock: in recording order (file date, then name), one after another from the synced clip before them, or ending at the next one.

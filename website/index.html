@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synco · sincronizá tus cámaras por el audio</title>
-  <meta name="description" content="Synco sincroniza clips de varias cámaras, teléfonos y grabadores comparando el audio, sin timecode. Gratis y de código abierto, para macOS.">
+  <meta name="description" content="Synco sincroniza clips de varias cámaras, teléfonos y grabadores comparando el audio, sin timecode. Gratis y de código abierto, para Mac, Windows y Linux.">
   <meta property="og:title" content="Synco">
-  <meta property="og:description" content="Sincronizá cámaras y grabadores por el audio. Gratis, para macOS.">
+  <meta property="og:description" content="Sincronizá cámaras y grabadores por el audio. Gratis, para Mac, Windows y Linux.">
   <meta property="og:image" content="https://clipxel.github.io/Synco/assets/icon-512.png">
   <meta name="theme-color" content="#efede6">
   <link rel="icon" type="image/png" href="assets/favicon.png">
@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Saira:wght@600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="site.css?v=3">
+  <link rel="stylesheet" href="site.css?v=4">
 </head>
 <body>
 
@@ -37,17 +37,17 @@
   <section class="hero">
     <div class="wrap">
       <div>
-        <div class="eyebrow">Gratis · código abierto · macOS</div>
+        <div class="eyebrow">Gratis · código abierto · Mac, Windows y Linux</div>
         <h1>Todas tus cámaras, <mark>en sincro</mark> por el audio.</h1>
         <p class="lead">Abrís el XML de tu línea de tiempo, tocás <b>Sincronizar</b> y vuelve a tu editor con cada clip en su lugar. Cámaras, teléfonos y grabadores, sin timecode y sin acomodar nada a mano.</p>
         <div class="cta">
           <a class="btn lime" id="dl-hero" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-macOS.dmg">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
-            Descargar para Mac
+            <span id="dl-label">Descargar para Mac</span>
           </a>
           <a class="btn" href="#descargar">Instalar desde la Terminal</a>
         </div>
-        <p class="meta">macOS 13 o más nuevo · Apple silicon e Intel · <span class="version">última versión</span></p>
+        <p class="meta"><span id="dl-meta">macOS 13 o más nuevo · Apple silicon e Intel</span> · <span class="version">última versión</span> · <a href="#descargar">otros sistemas</a></p>
       </div>
       <img class="hero-icon" src="assets/icon-512.png" alt="Ícono de Synco">
     </div>
@@ -150,24 +150,31 @@
       <div class="section-head">
         <div class="eyebrow">Descargar</div>
         <h2>Gratis, para siempre.</h2>
-        <p>Para macOS 13 o más nuevo, con Apple silicon o Intel. <span class="version">Última versión</span>.</p>
+        <p>Para Mac, Windows y Linux, con la misma versión en los tres. <span class="version">Última versión</span>.</p>
       </div>
-      <div class="download">
-        <div class="plate">
-          <h3>Instalador</h3>
-          <p>Abrí el .dmg y arrastrá Synco a Aplicaciones.</p>
-          <a class="btn lime" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-macOS.dmg">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
-            Descargar Synco
-          </a>
-        </div>
-        <div class="plate">
-          <h3>Desde la Terminal</h3>
-          <p>Baja la última versión, verifica que sea la publicada y la copia a Aplicaciones. Sin avisos de seguridad.</p>
+      <div class="download three">
+        <div class="plate" id="dl-mac">
+          <h3>Mac</h3>
+          <p>macOS 13 o más nuevo, Apple silicon o Intel. Abrí el .dmg y arrastrá Synco a Aplicaciones.</p>
+          <a class="btn lime" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-macOS.dmg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Descargar para Mac</a>
+          <p class="small">O desde la Terminal, sin avisos de seguridad:</p>
           <div class="term"><code id="cmd">curl -fsSL https://clipxel.github.io/Synco/install.sh | sh</code><button type="button" id="copy">Copiar</button></div>
         </div>
+        <div class="plate" id="dl-windows">
+          <h3>Windows</h3>
+          <p>Windows 10 u 11, 64 bits. Se instala para tu usuario, sin pedir permisos de administrador.</p>
+          <a class="btn lime" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-Windows-Setup.exe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Descargar para Windows</a>
+          <p class="small">Si aparece “Windows protegió tu PC”: <i>Más información › Ejecutar de todas formas</i>.</p>
+        </div>
+        <div class="plate" id="dl-linux">
+          <h3>Linux</h3>
+          <p>64 bits. El AppImage funciona en cualquier distribución y se actualiza solo; el .deb es para Ubuntu y Debian.</p>
+          <a class="btn lime" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-Linux.AppImage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>AppImage</a>
+          <a class="btn" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-Linux.deb">.deb</a>
+          <p class="small">El AppImage necesita permiso para ejecutarse: <code>chmod +x Synco-Linux.AppImage</code>.</p>
+        </div>
       </div>
-      <div class="note"><b>La primera vez que la abras</b>, si macOS dice que no puede verificar la app: <i>Ajustes del Sistema › Privacidad y seguridad › Abrir igualmente</i>. Pasa porque Synco es gratis y no está firmada por Apple. Después ya abre normal y se actualiza sola.</div>
+      <div class="note"><b>La primera vez que la abras en Mac</b>, si macOS dice que no puede verificar la app: <i>Ajustes del Sistema › Privacidad y seguridad › Abrir igualmente</i>. Pasa porque Synco es gratis y no está firmada por Apple ni por Microsoft. Después ya abre normal y se actualiza sola, en los tres sistemas.</div>
     </div>
   </section>
 
@@ -180,6 +187,8 @@
       <div class="faq">
         <details class="plate"><summary>¿Con qué editores funciona?</summary>
           <p>Con los que exportan Final Cut Pro XML (la versión 7): Premiere Pro, DaVinci Resolve y Vegas. Final Cut Pro (FCPXML) y Media Composer (AAF) están en camino.</p></details>
+        <details class="plate"><summary>¿Funciona en Windows y Linux?</summary>
+          <p>Sí. Es la misma versión con el mismo motor de sincronización en los tres sistemas: da exactamente el mismo resultado con el mismo proyecto. En Windows se instala para tu usuario; en Linux, el AppImage funciona en cualquier distribución.</p></details>
         <details class="plate"><summary>¿Sube mis videos a algún lado?</summary>
           <p>No. Todo pasa en tu Mac: lee el audio de tus archivos, los compara y escribe el XML. Solo se conecta para fijarse si hay una versión nueva.</p></details>
         <details class="plate"><summary>¿Qué pasa con los clips que no se sincronizan?</summary>
@@ -237,6 +246,21 @@
       document.querySelectorAll(".version").forEach(e => e.textContent = "versión " + r.tag_name.replace(/^v/, ""));
     })
     .catch(() => {});
+  // The hero button offers this computer's version.
+  (function () {
+    const ua = navigator.userAgent;
+    const os = /Windows/i.test(ua) ? "windows" : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? "linux" : "mac";
+    const hero = document.getElementById("dl-hero");
+    if (os === "windows") {
+      hero.href = "https://github.com/clipxel/Synco/releases/latest/download/Synco-Windows-Setup.exe";
+      document.getElementById("dl-label").textContent = "Descargar para Windows";
+      document.getElementById("dl-meta").textContent = "Windows 10 u 11 · 64 bits";
+    } else if (os === "linux") {
+      hero.href = "https://github.com/clipxel/Synco/releases/latest/download/Synco-Linux.AppImage";
+      document.getElementById("dl-label").textContent = "Descargar para Linux";
+      document.getElementById("dl-meta").textContent = "AppImage · 64 bits";
+    }
+  })();
   document.getElementById("copy").addEventListener("click", e => {
     navigator.clipboard.writeText(document.getElementById("cmd").textContent)
       .then(() => { e.target.textContent = "Copiado"; setTimeout(() => e.target.textContent = "Copiar", 1600); });

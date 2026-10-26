@@ -139,6 +139,7 @@ public final class SyncSession {
                      duration: audio[c.fileID]?.duration ?? Double(c.frames) / Double(project.fps))
         }
         let syncer = Syncer(clips: inputs, rate: rate, options: options, log: log)
+        syncer.soundOnly = Set(Dictionary(grouping: project.clips, by: \.device).filter { !$0.value.contains { $0.hasVideo } }.keys)
         var result = syncer.run()
         if options.isCancelled() { throw SyncCancelled() }
         let placed = Dictionary(uniqueKeysWithValues: result.map { ($0.id, $0) })

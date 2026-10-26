@@ -228,17 +228,18 @@ final class Server {
 
     private func fetch(_ url: URL) throws -> Data {
         if url.isFileURL { return try Data(contentsOf: url) }
+        final class Box: @unchecked Sendable { var result: Result<Data, Error> = .failure(ServerError("sin conexión")) }
+        let box = Box()
         let done = DispatchSemaphore(value: 0)
-        var result: Result<Data, Error> = .failure(ServerError("sin conexión"))
         var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
         request.setValue("Synco/\(engineVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { data, response, error in
-            if let data, (response as? HTTPURLResponse)?.statusCode == 200 { result = .success(data) }
-            else if let error { result = .failure(error) }
+            if let data, (response as? HTTPURLResponse)?.statusCode == 200 { box.result = .success(data) }
+            else if let error { box.result = .failure(error) }
             done.signal()
         }.resume()
         done.wait()
-        return try result.get()
+        return try box.result.get()
     }
 
     private func checkUpdate(_ msg: [String: Any]) throws -> [String: Any] {

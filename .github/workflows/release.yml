@@ -105,7 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n7\.[0-9]+-latest-linux64-lgpl-7\.[0-9]+\.tar\.xz$' | head -1)
+          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n[0-9.]+-latest-linux64-lgpl-[0-9.]+\.tar\.xz$' | sort -V | tail -1)
           echo "ffmpeg: $NAME"
           gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$NAME" -O ffmpeg.tar.xz
           mkdir ff && tar -xJf ffmpeg.tar.xz -C ff --strip-components=1
@@ -170,12 +170,14 @@ jobs:
         run: |
           engine/set_version.sh
           swift build -c release --package-path engine --product synccli
-          engine/.build/release/synccli.exe --version
+          BIN=$(swift build -c release --package-path engine --show-bin-path)
+          echo "ENGINE_BIN=$BIN" >> "$GITHUB_ENV"
+          "$BIN/synccli.exe" --version
       - name: ffmpeg (LGPL, BtbN)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n7\.[0-9]+-latest-win64-lgpl-7\.[0-9]+\.zip$' | head -1)
+          NAME=$(gh release view latest --repo BtbN/FFmpeg-Builds --json assets -q '.assets[].name' | grep -E '^ffmpeg-n[0-9.]+-latest-win64-lgpl-[0-9.]+\.zip$' | sort -V | tail -1)
           echo "ffmpeg: $NAME"
           gh release download latest --repo BtbN/FFmpeg-Builds --pattern "$NAME" -O ffmpeg.zip
           7z x -off ffmpeg.zip > /dev/null
@@ -185,7 +187,7 @@ jobs:
       - name: Motor con sus bibliotecas de Swift
         run: |
           E=desktop/src-tauri/resources/engine; mkdir -p $E
-          cp engine/.build/release/synccli.exe $E/
+          cp "$ENGINE_BIN/synccli.exe" $E/
           # The Swift runtime the engine needs, from wherever the toolchain put it on the PATH.
           RT=$(dirname "$(where swiftCore.dll | head -1 | tr -d '\r')")
           echo "runtime: $RT"

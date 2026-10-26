@@ -170,47 +170,49 @@ public final class FCP7Project {
         set(sequence, "duration", lastFrame)
     }
 
-    /// Two clips can't share a track at the same time (copies of one recording, takes): the later
-    /// one goes to a new track under the same kind, so nothing is overwritten or lost.
+    /// Two clips can't share a track at the same time (copies of one recording, overlapping
+    /// takes). A clip stays on its own tracks whenever it fits; only when it overlaps does it go
+    /// to an extra track, and extra tracks are shared: the first one where it fits is used, from
+    /// whichever track it came, so the sequence gets as few new tracks as possible.
     func moveOverlapsToNewTracks() {
         var trackOf = [ObjectIdentifier: (kind: String, index: Int)]()
-        var allTracks = [String: [XMLElement]]()
         for kind in ["video", "audio"] {
-            allTracks[kind] = tracks(kind)
             for (i, t) in tracks(kind).enumerated() {
                 for item in t.elements(forName: "clipitem") { trackOf[ObjectIdentifier(item)] = (kind, i) }
             }
         }
-        struct Key: Hashable { let kind: String; let index: Int; let level: Int }
-        var overflow = [Key: XMLElement]()
-        var freeAt = [Key: Int]()   // per track and level: the frame where it is free again
+        let original = ["video": tracks("video"), "audio": tracks("audio")]
+        var freeAt = [ObjectIdentifier: Int]()          // per track: the frame where it is free again
+        var extra = ["video": [XMLElement](), "audio": [XMLElement]()]
+        func free(_ t: XMLElement, _ start: Int) -> Bool { (freeAt[ObjectIdentifier(t)] ?? Int.min) <= start }
+
         let ordered = clips.filter { !$0.items.isEmpty }.sorted { (int($0.items[0], "start") ?? 0) < (int($1.items[0], "start") ?? 0) }
         for clip in ordered {
-            let parts = clip.items.compactMap { item -> (home: (kind: String, index: Int), start: Int, end: Int)? in
-                guard let home = trackOf[ObjectIdentifier(item)], let s = int(item, "start"), let e = int(item, "end") else { return nil }
-                return (home, s, e)
+            let parts = clip.items.compactMap { item -> (item: XMLElement, kind: String, home: XMLElement, start: Int, end: Int)? in
+                guard let h = trackOf[ObjectIdentifier(item)], let s = int(item, "start"), let e = int(item, "end") else { return nil }
+                return (item, h.kind, original[h.kind]![h.index], s, e)
             }
             guard !parts.isEmpty else { continue }
-            // The first level where every part of the clip fits on its own track.
-            var level = 0
-            while parts.contains(where: { (freeAt[Key(kind: $0.home.kind, index: $0.home.index, level: level)] ?? Int.min) > $0.start }) {
-                level += 1
+            // Where it was put by the editor, if every part fits there.
+            if parts.allSatisfy({ free($0.home, $0.start) }) {
+                for p in parts { freeAt[ObjectIdentifier(p.home)] = p.end }
+                continue
             }
-            for part in parts { freeAt[Key(kind: part.home.kind, index: part.home.index, level: level)] = part.end }
-            guard level > 0 else { continue }
-            for item in clip.items {
-                guard let home = trackOf[ObjectIdentifier(item)], let original = allTracks[home.kind]?[home.index] else { continue }
-                let key = Key(kind: home.kind, index: home.index, level: level)
-                let target = overflow[key] ?? {
-                    // A copy of the track (its settings, audio channel) without its clips.
-                    let t = original.copy() as! XMLElement
+            // Otherwise each part on the first extra track of its kind that is free (a new one if none).
+            var used = Set<ObjectIdentifier>()
+            for p in parts {
+                let target = extra[p.kind]!.first { !used.contains(ObjectIdentifier($0)) && free($0, p.start) } ?? {
+                    // A copy of the part's own track (its settings, audio channel) without clips.
+                    let t = p.home.copy() as! XMLElement
                     for child in t.elements(forName: "clipitem") + t.elements(forName: "transitionitem") { child.detach() }
-                    (original.parent as? XMLElement)?.addChild(t)
-                    overflow[key] = t
+                    (p.home.parent as? XMLElement)?.addChild(t)
+                    extra[p.kind]!.append(t)
                     return t
                 }()
-                item.detach()
-                target.addChild(item)
+                used.insert(ObjectIdentifier(target))
+                p.item.detach()
+                target.addChild(p.item)
+                freeAt[ObjectIdentifier(target)] = p.end
             }
         }
     }
