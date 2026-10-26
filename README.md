@@ -22,8 +22,8 @@ Synco se actualiza sola: al abrirse se fija si hay una versión nueva y ofrece i
 
 ## Cómo se usa
 
-1. En Premiere (o Resolve, Vegas): poné todos los clips de cámaras y grabadores en una secuencia y
-   exportala como **Final Cut Pro XML**.
+1. En Premiere (o Resolve, Vegas): poné los clips en una secuencia, **cada cámara o grabador en su
+   propia pista**, y exportala como **Final Cut Pro XML**.
 2. Abrí ese XML en Synco (o soltalo sobre la ventana) y tocá **Sincronizar**.
 3. **Exportar** y, en el editor, *Archivo › Importar* el XML nuevo.
 

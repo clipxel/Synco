@@ -85,7 +85,10 @@ public final class SyncSession {
     public func sync(options: SyncOptions = SyncOptions(), ignoring: Set<String> = [],
                      log: @escaping (String) -> Void = { _ in }) throws -> SyncOutcome {
         let started = Date()
-        let inputs = project.clips.map { c in
+        let duration = { (c: ProjectClip) in self.audio[c.fileID]?.duration ?? Double(c.frames) / Double(self.project.fps) }
+        let twinOf = Self.twins(project.clips, duration: duration)
+        if !twinOf.isEmpty { log("\(twinOf.count) copias de otros clips (original + convertido): van donde va su original") }
+        let inputs = project.clips.filter { twinOf[$0.fileID] == nil }.map { c in
             SyncClip(id: c.fileID, name: c.name, device: c.device,
                      audio: ignoring.contains(c.fileID) ? nil : audio[c.fileID],
                      recordedAt: recordingStart(url: c.url),
@@ -93,8 +96,16 @@ public final class SyncSession {
                      duration: audio[c.fileID]?.duration ?? Double(c.frames) / Double(project.fps))
         }
         let syncer = Syncer(clips: inputs, rate: rate, options: options, log: log)
-        let result = syncer.run()
+        var result = syncer.run()
         if options.isCancelled() { throw SyncCancelled() }
+        let placed = Dictionary(uniqueKeysWithValues: result.map { ($0.id, $0) })
+        let names = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.fileID, $0.name) })
+        for (twin, original) in twinOf {
+            guard var p = placed[original] else { continue }
+            p = Placement(id: twin, time: p.time, method: p.method, z: p.z, ratio: p.ratio, clockError: p.clockError,
+                          note: "copia de \(names[original] ?? original)")
+            result.append(p)
+        }
 
         let fps = Double(project.fps)
         let origin = result.filter { $0.method != .unplaced }.map(\.time).min() ?? 0
@@ -115,16 +126,44 @@ public final class SyncSession {
         var overlaps = [String]()
         for (_, list) in Dictionary(grouping: project.clips, by: \.device) {
             let sorted = list.sorted { starts[$0.fileID]! < starts[$1.fileID]! }
-            for (a, b) in zip(sorted, sorted.dropFirst()) {
+            for (a, b) in zip(sorted, sorted.dropFirst()) where twinOf[a.fileID] != b.fileID && twinOf[b.fileID] != a.fileID {
                 let over = starts[a.fileID]! + a.frames - starts[b.fileID]!
                 if over > 1 { overlaps.append("\(a.name) se pisa con \(b.name) por \(over) cuadros") }
             }
         }
 
         log("verificando pares de cámaras entre sí…")
-        let checks = syncer.crosscheck(result)
+        let checks = syncer.crosscheck(result.filter { twinOf[$0.id] == nil })
         return SyncOutcome(placements: result, starts: starts, checks: checks, overlaps: overlaps,
                            seconds: Date().timeIntervalSince(started))
+    }
+
+    /// Copies of one recording on the same device (an original and the version converted for
+    /// editing, "IMG_2868.MOV" and "IMG_2868_1.mp4"): same name stem and length. Returns copy → original.
+    static func twins(_ clips: [ProjectClip], duration: (ProjectClip) -> Double) -> [String: String] {
+        func stem(_ name: String) -> String {
+            var s = name.lowercased()
+            while let dot = s.lastIndex(of: "."), s.distance(from: dot, to: s.endIndex) <= 5 { s = String(s[..<dot]) }
+            // Only the marks a copy gets ("_1", " copy"); "-02" is the next part of a split take,
+            // and "Tema 2" is another song.
+            if let r = s.range(of: #"(_\d{1,2}|[ _\-](copy|copia|proxy))$"#, options: .regularExpression) { s.removeSubrange(r) }
+            return s
+        }
+        func rank(_ c: ProjectClip) -> (Int, Int, String) {
+            let ext = c.url.pathExtension.lowercased()
+            let looksCopied = stem(c.name) + "." + ext != c.name.lowercased() ? 1 : 0
+            let original = ["mov", "mxf", "mts", "braw", "r3d", "wav"].contains(ext) ? 0 : 1
+            return (looksCopied, original, c.name)
+        }
+        var out = [String: String]()
+        for (_, group) in Dictionary(grouping: clips, by: { $0.device + "|" + stem($0.name) }) where group.count > 1 {
+            let sorted = group.sorted { rank($0) < rank($1) }
+            let original = sorted[0]
+            for copy in sorted.dropFirst() where abs(duration(copy) - duration(original)) <= 2 {
+                out[copy.fileID] = original.fileID
+            }
+        }
+        return out
     }
 
     /// Writes the synced XML (and the report next to it, if asked).

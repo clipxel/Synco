@@ -216,7 +216,8 @@ final class AppModel: ObservableObject {
                 (recordingStart(url: $0.url) ?? .distantPast, $0.name) < (recordingStart(url: $1.url) ?? .distantPast, $1.name)
             }
             let video = clips.contains { $0.hasVideo }
-            let folder = (device as NSString).lastPathComponent
+            // Its editor track and folder, so it is easy to tell which is which.
+            let folder = "\(clips[0].track) · \((clips[0].folder as NSString).lastPathComponent)"
             if video { cams += 1 } else { recs += 1 }
             rows.append(TrackRow(id: device, kind: video ? .camera : .recorder,
                                  name: video ? "CÁMARA \(cams)" : "GRABADOR \(recs)", folder: folder, clips: clips))
@@ -250,10 +251,12 @@ final class AppModel: ObservableObject {
                     self.peaks = peaks
                     self.durations = durations
                     let failed = session.problems.count
+                    let images = session.project.skippedImages.count
                     self.phase = .ready
                     self.message = failed == 0
                         ? "Listo para sincronizar."
                         : "Listo. \(failed) archivo(s) sin audio legible: se van a ubicar por su hora."
+                    if images > 0 { self.message += " \(images) imagen(es) quedan como están: no tienen sonido." }
                     next?()
                 }
             } catch {

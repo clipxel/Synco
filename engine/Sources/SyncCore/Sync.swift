@@ -67,6 +67,8 @@ public struct SyncOptions {
     public var window: Double = 20
     /// A global match further than this from its device's clock is checked again.
     public var clockTolerance: Double = 4
+    /// A match this clear is kept even when its clock disagrees.
+    public var zStrong: Float = 15
     /// How close to the clock a peak must be for the clock to break a tie.
     public var clockAgree: Double = 1.5
     public var workers: Int = 6
@@ -87,6 +89,8 @@ public final class Syncer {
     var wallStart = Date()
     var referenceDevice = ""
     var deviceOffsets = [String: Double]()
+    /// Devices whose file dates say nothing about when they recorded.
+    public private(set) var unreliableClocks = Set<String>()
 
     public init(clips: [SyncClip], rate: Double, options: SyncOptions = SyncOptions(), log: @escaping (String) -> Void) {
         self.clips = clips
@@ -129,7 +133,13 @@ public final class Syncer {
             if let end = previousEnd, let start = r.recordedAt {
                 let continues = previousClosed.map { abs(start.timeIntervalSince($0)) < 2 } ?? false
                 let gap = start.timeIntervalSince(end)
-                if !continues && gap > 2 { master.append(contentsOf: repeatElement(0, count: Int(gap * rate))) }
+                // A real pause, up to a long break between sets. Days of "gap" mean a file date
+                // that is wrong (a copy), and filling them with silence would take all the memory.
+                if !continues && gap > 2 && gap < 6 * 3600 {
+                    master.append(contentsOf: repeatElement(0, count: Int(gap * rate)))
+                } else if gap >= 6 * 3600 {
+                    log(String(format: "%@: su fecha está %.0f h después del anterior; va pegado", r.name, gap / 3600))
+                }
             }
             previousClosed = r.modifiedAt
             placements[r.id] = Placement(id: r.id, time: Double(master.count) / rate, method: .reference)
@@ -148,7 +158,7 @@ public final class Syncer {
         let correlator = Correlator(reference: master, maxClip: maxClip, rate: rate, settings: options.match)
         let lock = NSLock()
         var done = 0
-        let workers = min(options.workers, todo.count)
+        let workers = min(options.workers, todo.count, Self.workersThatFit(fftSize(atLeast: master.count + maxClip + 16)))
         DispatchQueue.concurrentPerform(iterations: workers) { w in
             for i in stride(from: w, to: todo.count, by: workers) {
                 if options.isCancelled() { return }
@@ -167,6 +177,13 @@ public final class Syncer {
         }
     }
 
+    /// How many clips can be correlated at once without swapping: each one needs about
+    /// ten bytes per FFT point (its spectrum, weights and correlation); a third of the RAM is the budget.
+    static func workersThatFit(_ n: Int) -> Int {
+        let budget = Double(ProcessInfo.processInfo.physicalMemory) / 3
+        return max(1, Int(budget / (Double(n) * 10)))
+    }
+
     // MARK: Clocks
 
     func clockPosition(_ clip: SyncClip) -> Double? {
@@ -175,6 +192,8 @@ public final class Syncer {
 
     /// Each device's clock offset from the reference, as the median over its
     /// audio-synced clips; matches that disagree with it are dropped for a second look.
+    /// A device whose clips disagree among themselves (exports and copies carry the date
+    /// they were written, not recorded) has no usable clock: nothing is judged by it.
     func calibrateClocks() {
         var byDevice = [String: [(clip: SyncClip, offset: Double)]]()
         for clip in clips where clip.device != referenceDevice {
@@ -184,14 +203,22 @@ public final class Syncer {
         for (device, list) in byDevice {
             let sorted = list.map(\.offset).sorted()
             let median = sorted[sorted.count / 2]
+            let spread = list.map { abs($0.offset - median) }.sorted()[list.count / 2]
+            if list.count >= 3 && spread > options.clockTolerance {
+                deviceOffsets[device] = nil
+                unreliableClocks.insert(device)
+                for (clip, _) in list { placements[clip.id]?.clockError = nil }
+                continue
+            }
             deviceOffsets[device] = median
             for (clip, offset) in list {
                 let error = offset - median
                 placements[clip.id]?.clockError = error
-                if abs(error) > options.clockTolerance, let p = placements[clip.id], p.method == .audio {
-                    placements[clip.id] = nil
-                    log(String(format: "descarto %@: %.1f s lejos de lo que dice su reloj (z %.1f)", clip.name, error, p.z))
-                }
+                // A clear, unique peak is trusted over a clock: clocks get reset, audio does not lie.
+                guard let p = placements[clip.id], p.method == .audio, abs(error) > options.clockTolerance,
+                      !(p.z >= options.zStrong && p.ratio >= 1.5) else { continue }
+                placements[clip.id] = nil
+                log(String(format: "descarto %@: %.1f s lejos de lo que dice su reloj (z %.1f)", clip.name, error, p.z))
             }
         }
     }
@@ -363,7 +390,9 @@ public final class Syncer {
 
     func placeByClock() {
         for clip in clips where placements[clip.id] == nil {
-            if let clock = clockPosition(clip) {
+            if unreliableClocks.contains(clip.device), let t = placeByOrder(clip) {
+                placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "por orden (reloj no confiable)")
+            } else if let clock = clockPosition(clip) {
                 let offset = deviceOffsets[clip.device] ?? 0
                 placements[clip.id] = Placement(id: clip.id, time: clock + offset, method: .clock,
                                                 note: deviceOffsets[clip.device] == nil ? "reloj sin calibrar" : "")
@@ -371,6 +400,30 @@ public final class Syncer {
                 placements[clip.id] = Placement(id: clip.id, time: 0, method: .unplaced)
             }
         }
+        placeOverlapsAside()
+    }
+
+    /// For a device with no usable clock: in name order (cameras number their files as they
+    /// record), one after another from the synced clip before them, or ending at the next one.
+    func placeByOrder(_ clip: SyncClip) -> Double? {
+        let mine = clips.filter { $0.device == clip.device }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        guard let i = mine.firstIndex(where: { $0.id == clip.id }) else { return nil }
+        // Walk back to the last clip that already has a place, adding up the ones in between.
+        var gap = 0.0
+        for j in stride(from: i - 1, through: 0, by: -1) {
+            if let p = placements[mine[j].id] { return p.time + mine[j].duration + 1 + gap }
+            gap += mine[j].duration + 1
+        }
+        // Nothing before it: line up backwards from the next placed clip.
+        var ahead = clip.duration + 1
+        for j in (i + 1)..<mine.count {
+            if let p = placements[mine[j].id] { return p.time - ahead }
+            ahead += mine[j].duration + 1
+        }
+        return nil
+    }
+
+    func placeOverlapsAside() {
         // A clock guess can't overlap its own device's clips: slide it to the nearer free side.
         for clip in clips where placements[clip.id]?.method == .clock {
             let others = clips.filter { $0.device == clip.device && $0.id != clip.id }

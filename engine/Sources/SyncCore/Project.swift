@@ -6,8 +6,13 @@ public final class ProjectClip {
     public let fileID: String
     public let name: String
     public internal(set) var url: URL
-    /// The folder the file lives in: one camera, phone or recorder card.
-    public var device: String { url.deletingLastPathComponent().path }
+    /// The folder the file lives in.
+    public var folder: String { url.deletingLastPathComponent().path }
+    /// Which camera, phone or recorder made it: the editor's track it sits on (each device on
+    /// its own track, stereo pairs together), and within a track, its folder.
+    public internal(set) var device: String
+    /// The editor track that defines the device ("V1", "A7").
+    public let track: String
     public var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
     /// Whether the editor says the file has a picture (a camera or phone, not a recorder).
     public let hasVideo: Bool
@@ -15,10 +20,12 @@ public final class ProjectClip {
     public let frames: Int
     let items: [XMLElement]
 
-    init(fileID: String, name: String, url: URL, frames: Int, hasVideo: Bool, items: [XMLElement]) {
+    init(fileID: String, name: String, url: URL, frames: Int, hasVideo: Bool, track: String, items: [XMLElement]) {
         self.fileID = fileID
         self.name = name
         self.url = url
+        self.track = track
+        self.device = track + "|" + url.deletingLastPathComponent().path
         self.hasVideo = hasVideo
         self.frames = frames
         self.items = items
@@ -43,6 +50,10 @@ public final class FCP7Project {
     public let fps: Int
     public let sequenceName: String
     public private(set) var clips: [ProjectClip] = []
+    /// Stills on the timeline (photos, graphics): no sound, so they are left where they are.
+    public private(set) var skippedImages: [String] = []
+    public static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif", "bmp",
+                                                      "psd", "dng", "cr2", "cr3", "nef", "arw", "raf", "webp", "svg", "ai", "eps"]
 
     public init(url: URL) throws {
         document = try XMLDocument(contentsOf: url, options: [.nodePreserveAll])
@@ -61,6 +72,13 @@ public final class FCP7Project {
         var itemsByFile = [String: [XMLElement]]()
         var order = [String]()
         var video = Set<String>()
+        // Where each item sits: its track, video first, as (kind order, index).
+        var place = [ObjectIdentifier: (kind: Int, index: Int)]()
+        for (k, kind) in ["video", "audio"].enumerated() {
+            for (i, track) in tracks(kind).enumerated() {
+                for item in track.elements(forName: "clipitem") { place[ObjectIdentifier(item)] = (k, i + 1) }
+            }
+        }
         for item in clipItems() {
             guard let file = item.elements(forName: "file").first,
                   let id = file.attribute(forName: "id")?.stringValue else { continue }
@@ -86,8 +104,13 @@ public final class FCP7Project {
         }
         for id in order {
             guard let (name, url) = paths[id], let items = itemsByFile[id] else { continue }
+            if Self.imageExtensions.contains(url.pathExtension.lowercased()) { skippedImages.append(name); continue }
             let frames = items.compactMap { Int($0.elements(forName: "duration").first?.stringValue ?? "") }.max() ?? 0
-            clips.append(ProjectClip(fileID: id, name: name, url: url, frames: frames, hasVideo: video.contains(id), items: items))
+            // Its home track: the first video track it is on, else the first audio track.
+            let home = items.compactMap { place[ObjectIdentifier($0)] }.min { ($0.kind, $0.index) < ($1.kind, $1.index) }
+            let track = home.map { ($0.kind == 0 ? "V" : "A") + String($0.index) } ?? "?"
+            clips.append(ProjectClip(fileID: id, name: name, url: url, frames: frames, hasVideo: video.contains(id),
+                                     track: track, items: items))
         }
     }
 
@@ -116,6 +139,7 @@ public final class FCP7Project {
                 if disabled.contains(clip.fileID) { setText(item, "enabled", "FALSE") }
             }
         }
+        moveOverlapsToNewTracks()
         // Every track in timeline order, then link indexes rebuilt from it.
         var position = [String: (track: Int, clip: Int)]()
         var lastFrame = 0
@@ -141,6 +165,51 @@ public final class FCP7Project {
             }
         }
         set(sequence, "duration", lastFrame)
+    }
+
+    /// Two clips can't share a track at the same time (copies of one recording, takes): the later
+    /// one goes to a new track under the same kind, so nothing is overwritten or lost.
+    func moveOverlapsToNewTracks() {
+        var trackOf = [ObjectIdentifier: (kind: String, index: Int)]()
+        var allTracks = [String: [XMLElement]]()
+        for kind in ["video", "audio"] {
+            allTracks[kind] = tracks(kind)
+            for (i, t) in tracks(kind).enumerated() {
+                for item in t.elements(forName: "clipitem") { trackOf[ObjectIdentifier(item)] = (kind, i) }
+            }
+        }
+        struct Key: Hashable { let kind: String; let index: Int; let level: Int }
+        var overflow = [Key: XMLElement]()
+        var freeAt = [Key: Int]()   // per track and level: the frame where it is free again
+        let ordered = clips.filter { !$0.items.isEmpty }.sorted { (int($0.items[0], "start") ?? 0) < (int($1.items[0], "start") ?? 0) }
+        for clip in ordered {
+            let parts = clip.items.compactMap { item -> (home: (kind: String, index: Int), start: Int, end: Int)? in
+                guard let home = trackOf[ObjectIdentifier(item)], let s = int(item, "start"), let e = int(item, "end") else { return nil }
+                return (home, s, e)
+            }
+            guard !parts.isEmpty else { continue }
+            // The first level where every part of the clip fits on its own track.
+            var level = 0
+            while parts.contains(where: { (freeAt[Key(kind: $0.home.kind, index: $0.home.index, level: level)] ?? Int.min) > $0.start }) {
+                level += 1
+            }
+            for part in parts { freeAt[Key(kind: part.home.kind, index: part.home.index, level: level)] = part.end }
+            guard level > 0 else { continue }
+            for item in clip.items {
+                guard let home = trackOf[ObjectIdentifier(item)], let original = allTracks[home.kind]?[home.index] else { continue }
+                let key = Key(kind: home.kind, index: home.index, level: level)
+                let target = overflow[key] ?? {
+                    // A copy of the track (its settings, audio channel) without its clips.
+                    let t = original.copy() as! XMLElement
+                    for child in t.elements(forName: "clipitem") + t.elements(forName: "transitionitem") { child.detach() }
+                    (original.parent as? XMLElement)?.addChild(t)
+                    overflow[key] = t
+                    return t
+                }()
+                item.detach()
+                target.addChild(item)
+            }
+        }
     }
 
     /// Names the sequence in the written XML (the project keeps its original name).

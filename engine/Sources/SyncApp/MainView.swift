@@ -255,7 +255,7 @@ struct EmptyState: View {
                 .foregroundStyle(targeted ? Theme.accent : Theme.textMuted)
             Text("Soltá acá el XML de tu línea de tiempo")
                 .font(Theme.Font.lg)
-            Text("En Premiere: Archivo › Exportar › Final Cut Pro XML. Poné todos los clips de cámaras y grabadores en una secuencia, sin ordenar.")
+            Text("En Premiere: Archivo › Exportar › Final Cut Pro XML. Una pista por cámara o grabador, con los clips sin ordenar.")
                 .font(Theme.Font.base)
                 .foregroundStyle(Theme.textMuted)
                 .multilineTextAlignment(.center)
@@ -305,7 +305,7 @@ struct ClipInspector: View {
             if let id = model.selected, let clip = model.clip(id) {
                 Image(systemName: clip.hasVideo ? "video" : "mic").foregroundStyle(Theme.textMuted)
                 Text(clip.name).font(Theme.Font.lg)
-                Text((clip.device as NSString).lastPathComponent).font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
+                Text("\(clip.track) · \((clip.folder as NSString).lastPathComponent)").font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 Text(formatLength(model.duration(clip))).font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 if let p = model.placements[id] {
                     Text(methodText(p)).font(Theme.Font.sm).foregroundStyle(p.method.synced ? Theme.success : Theme.clipUnsynced)

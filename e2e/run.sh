@@ -62,6 +62,19 @@ out=$(run --open "$SRC" --sync --disable-unsynced --export "$T/dis.xml")
 n=$(grep -c '<enabled>FALSE</enabled>' "$T/dis.xml")
 [ "$n" -gt 0 ] && ok "S09-H1 no sincronizados deshabilitados ($n items)" || bad "S09-H1" "$out"
 
+# F06 un proyecto con varias cámaras y grabadores en la misma carpeta, copias, imágenes y
+# exportaciones sin hora (solo si está el proyecto y su tarjeta: MORA=ruta/al.xml).
+MORA=${MORA:-$HOME/Downloads/mora.xml}
+if [ -f "$MORA" ] && grep -q "VERBATIM" "$MORA" && [ -d "/Volumes/VERBATIM SD" ]; then
+  out=$(run --open "$MORA" --sync --export "$T/mora.xml")
+  chk=$(python3 tools/check_xml.py "$MORA" "$T/mora.xml" 2>&1)
+  echo "$out" | grep -q "4 imagen" && ok "F06-H1 imágenes ignoradas" || bad "F06-H1" "$out"
+  echo "$chk" | grep -q "links mal: 0 | recortes cambiados: 0 | clips con pistas desfasadas entre sí: 0 | solapes: 0" \
+    && ok "F06-H2 XML exportado sin clips pisados en una misma pista" || bad "F06-H2" "$chk"
+  n=$(echo "$out" | sed -n 's/.*synco: \([0-9]*\) de 311.*/\1/p')
+  [ "${n:-0}" -ge 129 ] && ok "F06-H3 $n de 311 por audio (mínimo 129)" || bad "F06-H3" "$out"
+fi
+
 # Ajustes intactos después de las pruebas
 defaults read local.mariano.synco prefs >/dev/null 2>&1; ok "ajustes del usuario restaurados al salir"
 

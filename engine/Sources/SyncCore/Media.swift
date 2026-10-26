@@ -188,11 +188,25 @@ public func recordingStart(url: URL) -> Date? {
         }
     default: break
     }
-    let result = date ?? fileDate
+    // Phones and recorders name files after when they started ("20260801_222840-01.wav"):
+    // better than a file date that a copy or an export rewrote.
+    let result = date ?? nameTimestamp(url.lastPathComponent) ?? fileDate
     startLock.lock()
     startCache[key] = result
     startLock.unlock()
     return result
+}
+
+/// "YYYYMMDD_HHMMSS" (or with "-" / "T" between) at the start of a file name, local time.
+public func nameTimestamp(_ name: String) -> Date? {
+    guard let m = name.range(of: #"^(VID_|IMG_|REC_|AUD_)?(20\d{2})(\d{2})(\d{2})[_\-T ]?(\d{2})(\d{2})(\d{2})"#,
+                             options: .regularExpression) else { return nil }
+    let digits = name[m].filter(\.isNumber)
+    guard digits.count >= 14 else { return nil }
+    let f = DateFormatter()
+    f.dateFormat = "yyyyMMddHHmmss"
+    f.timeZone = .current
+    return f.date(from: String(digits.prefix(14)))
 }
 
 private let startLock = NSLock()
