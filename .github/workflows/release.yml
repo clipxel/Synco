@@ -113,6 +113,11 @@ jobs:
           echo "FFMPEG_DIR=$PWD/ff" >> "$GITHUB_ENV"
       - name: Prueba sintética
         run: SYNCO_FFMPEG="$FFMPEG_DIR/bin/ffmpeg" engine/.build/release/synccli selftest "$RUNNER_TEMP/selftest"
+      - name: Si falló, repetirla en modo depuración (dice dónde)
+        if: failure()
+        run: |
+          swift build --package-path engine --product synccli
+          SWIFT_BACKTRACE=enable=yes,interactive=no SYNCO_FFMPEG="$FFMPEG_DIR/bin/ffmpeg" engine/.build/debug/synccli selftest "$RUNNER_TEMP/selftest-debug" || true
       - name: App (Tauri)
         run: |
           python3 - <<'PY'
@@ -170,7 +175,7 @@ jobs:
         run: |
           engine/set_version.sh
           swift build -c release --package-path engine --product synccli
-          BIN=$(swift build -c release --package-path engine --show-bin-path)
+          BIN=$(cygpath -u "$(swift build -c release --package-path engine --show-bin-path)")
           echo "ENGINE_BIN=$BIN" >> "$GITHUB_ENV"
           "$BIN/synccli.exe" --version
       - name: ffmpeg (LGPL, BtbN)
