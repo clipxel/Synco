@@ -84,6 +84,13 @@ function buildTracks() {
 
 B.on("read", (e) => { S.readDone = e.done; S.readTotal = e.total; renderStatus(); });
 B.on("log", (e) => { if (S.phase === "matching") message(e.line.charAt(0).toUpperCase() + e.line.slice(1)); });
+// The slow search runs on its own after reading; while the project just sits there, say how it goes.
+B.on("ahead", (e) => {
+  if (S.phase !== "ready") return;
+  const n = e.line && e.line.match(/(\d+)\/(\d+)/);
+  if (e.done) message("Listo para sincronizar: el audio ya está analizado.");
+  else if (n) message(`Listo para sincronizar. Analizando el audio de fondo: ${n[1]} de ${n[2]}…`);
+});
 
 async function read() {
   S.phase = "reading"; S.readDone = 0; S.readTotal = S.project.clips.length;

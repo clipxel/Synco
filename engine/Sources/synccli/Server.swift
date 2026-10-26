@@ -16,6 +16,9 @@ final class Server {
     private var outcome: SyncOutcome?
     private var fileURL: URL?
     private var update: (version: String, url: String, sha256: String, file: String)?
+    /// The slow search, run on its own after reading (SyncSession.searchAhead).
+    private let ahead = DispatchGroup()
+    private let aheadCancel = CancelFlag()
     let cache: AudioCache
     let rate: Double
 
@@ -72,6 +75,7 @@ final class Server {
     }
 
     private func open(_ path: String) throws -> [String: Any] {
+        stopAhead()
         let url = URL(fileURLWithPath: path)
         let project = try FCP7Project(url: url)
         guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
@@ -127,11 +131,32 @@ final class Server {
             peaks[id] = Data(bytes).base64EncodedString()
             durations[id] = track.duration
         }
+        startAhead(session)
         return ["peaks": peaks, "durations": durations, "problems": session.problems]
+    }
+
+    private func startAhead(_ session: SyncSession) {
+        stopAhead()
+        aheadCancel.set(false)
+        var options = SyncOptions()
+        options.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
+        let flag = aheadCancel
+        options.isCancelled = { flag.isSet }
+        DispatchQueue.global(qos: .utility).async(group: ahead) { [self] in
+            session.searchAhead(options: options) { line in self.send(["event": "ahead", "line": line]) }
+            if !flag.isSet { send(["event": "ahead", "done": true]) }
+        }
+    }
+
+    /// Stops it (what it found is kept) and waits, so two searches never run at once.
+    private func stopAhead() {
+        aheadCancel.set(true)
+        ahead.wait()
     }
 
     private func sync(_ msg: [String: Any]) throws -> [String: Any] {
         guard let session else { throw ServerError("no hay proyecto abierto") }
+        stopAhead()
         cancel.set(false)
         let prefs = msg["options"] as? [String: Any] ?? [:]
         var options = SyncOptions()
@@ -216,7 +241,7 @@ final class Server {
         let keys: [URLResourceKey] = [.contentModificationDateKey]
         let files = (try? FileManager.default.contentsOfDirectory(at: defaultCacheDir, includingPropertiesForKeys: keys)) ?? []
         let limit = Date().addingTimeInterval(-Double(days ?? 0) * 86400)
-        for f in files where f.pathExtension == "f32" {
+        for f in files where ["f32", "matches"].contains(f.pathExtension) {
             let used = (try? f.resourceValues(forKeys: Set(keys)))?.contentModificationDate ?? .distantPast
             if days == nil || used < limit { try? FileManager.default.removeItem(at: f) }
         }

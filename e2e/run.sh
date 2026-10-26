@@ -53,7 +53,8 @@ if echo "$out" | grep -q "faltantes 1" && echo "$out" | grep -q "fase done"; the
 out=$(run --open "$SRC" --ignore 30 --sync)
 echo "$out" | grep -q "→ clock" && ok "F05-H1 corrección: el clip pasa a ubicarse por su hora" || bad "F05-H1" "$out"
 
-# S03-E1 detener a mitad
+# S03-E1 detener a mitad (sin la búsqueda guardada, que la haría terminar antes de 3 s)
+rm -f "$HOME/Library/Caches/Synco/audio/"*.matches
 out=$(run --open "$SRC" --sync --stop-after 3)
 echo "$out" | grep -q "fase stopped" && ok "S03-E1 detener deja la app en estado detenido" || bad "S03-E1" "$out"
 

@@ -87,10 +87,14 @@ public final class SyncSession {
     public private(set) var audio = [String: AudioTrack]()
     public private(set) var problems = [String: String]()
 
+    /// Global search results, next to the cached audio.
+    public let matches: MatchStore
+
     public init(project: FCP7Project, cache: AudioCache = AudioCache(dir: defaultCacheDir), rate: Double = 4000) {
         self.project = project
         self.cache = cache
         self.rate = rate
+        matches = MatchStore(dir: cache.dir)
     }
 
     /// Reads every file's audio not read yet, a few at a time (disk bound).
@@ -117,6 +121,28 @@ public final class SyncSession {
         if cancelled() { throw SyncCancelled() }
     }
 
+    func makeSyncer(options: SyncOptions, ignoring: Set<String>, twinOf: [String: String], log: @escaping (String) -> Void) -> Syncer {
+        let inputs = project.clips.filter { twinOf[$0.fileID] == nil }.map { c in
+            SyncClip(id: c.fileID, name: c.name, device: c.device,
+                     audio: ignoring.contains(c.fileID) ? nil : audio[c.fileID],
+                     recordedAt: recordingStart(url: c.url),
+                     modifiedAt: (try? c.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                     duration: audio[c.fileID]?.duration ?? Double(c.frames) / Double(project.fps))
+        }
+        let syncer = Syncer(clips: inputs, rate: rate, options: options, log: log)
+        syncer.soundOnly = Set(Dictionary(grouping: project.clips, by: \.device).filter { !$0.value.contains { $0.hasVideo } }.keys)
+        syncer.store = matches
+        return syncer
+    }
+
+    /// The slow search, done ahead (right after opening) and stored: Sync then only reads it.
+    /// Stopping it early keeps what was already searched.
+    public func searchAhead(options: SyncOptions = SyncOptions(), ignoring: Set<String> = [], log: @escaping (String) -> Void = { _ in }) {
+        let duration = { (c: ProjectClip) in self.audio[c.fileID]?.duration ?? Double(c.frames) / Double(self.project.fps) }
+        let twinOf = Self.twins(project.clips, duration: duration)
+        makeSyncer(options: options, ignoring: ignoring, twinOf: twinOf, log: log).searchAhead()
+    }
+
     /// Forgets a file's audio, after it was relinked to another path.
     public func forget(_ fileID: String) {
         audio[fileID] = nil
@@ -131,15 +157,7 @@ public final class SyncSession {
         let duration = { (c: ProjectClip) in self.audio[c.fileID]?.duration ?? Double(c.frames) / Double(self.project.fps) }
         let twinOf = Self.twins(project.clips, duration: duration)
         if !twinOf.isEmpty { log("\(twinOf.count) copias de otros clips (original + convertido): van donde va su original") }
-        let inputs = project.clips.filter { twinOf[$0.fileID] == nil }.map { c in
-            SyncClip(id: c.fileID, name: c.name, device: c.device,
-                     audio: ignoring.contains(c.fileID) ? nil : audio[c.fileID],
-                     recordedAt: recordingStart(url: c.url),
-                     modifiedAt: (try? c.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                     duration: audio[c.fileID]?.duration ?? Double(c.frames) / Double(project.fps))
-        }
-        let syncer = Syncer(clips: inputs, rate: rate, options: options, log: log)
-        syncer.soundOnly = Set(Dictionary(grouping: project.clips, by: \.device).filter { !$0.value.contains { $0.hasVideo } }.keys)
+        let syncer = makeSyncer(options: options, ignoring: ignoring, twinOf: twinOf, log: log)
         var result = syncer.run()
         if options.isCancelled() { throw SyncCancelled() }
         let placed = Dictionary(uniqueKeysWithValues: result.map { ($0.id, $0) })

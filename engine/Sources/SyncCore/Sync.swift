@@ -96,6 +96,11 @@ public final class Syncer {
 
     /// Devices with no picture (console, recorders): preferred as the reference.
     public var soundOnly = Set<String>()
+    /// Clips a clock check took off: the camera-to-camera search, which can't be checked against
+    /// the clock any better, doesn't put them back (it would go round in circles).
+    var droppedByClock = Set<String>()
+    /// Global search results from before (this project opened earlier, or searched on opening).
+    public var store: MatchStore?
 
     public init(clips: [SyncClip], rate: Double, options: SyncOptions = SyncOptions(), log: @escaping (String) -> Void) {
         self.clips = clips
@@ -107,14 +112,26 @@ public final class Syncer {
     public func run() -> [Placement] {
         let master = buildReference()
         log(String(format: "referencia: %@, %.1f h de audio", (referenceDevice as NSString).lastPathComponent, Double(master.count) / rate / 3600))
+        var t = Date()
+        func lap(_ what: String) {
+            if ProcessInfo.processInfo.environment["SYNCO_TIMING"] != nil { log(String(format: "tiempo %@: %.1f s", what, Date().timeIntervalSince(t))) }
+            t = Date()
+        }
         matchGlobally(master)
+        lap("global")
         if options.isCancelled() { return [] }
         calibrateClocks()
-        var round = 1
-        while !options.isCancelled(), matchNear(master) > 0 { round += 1; calibrateClocks() }
-        while !options.isCancelled(), matchBetween(master) > 0 { calibrateClocks() }
-        while !options.isCancelled(), matchAgainstCameras() > 0 { calibrateClocks() }
+        // Each pass again while it finds more, a few rounds at most: a clock check can take back
+        // what a pass found, and the two must not take turns forever.
+        let rounds = 8
+        for _ in 0..<rounds where !options.isCancelled() { if matchNear(master) == 0 { break }; calibrateClocks() }
+        lap("cerca")
+        for _ in 0..<rounds where !options.isCancelled() { if matchBetween(master) == 0 { break }; calibrateClocks() }
+        lap("vecinos")
+        for _ in 0..<rounds where !options.isCancelled() { if matchAgainstCameras() == 0 { break }; calibrateClocks() }
+        lap("cámaras")
         if !options.isCancelled() { matchGroups() }
+        lap("grupos")
         if options.isCancelled() { return [] }
         placeByClock()
         return clips.compactMap { placements[$0.id] }
@@ -189,26 +206,50 @@ public final class Syncer {
         let todo = clips.filter { placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > Int(rate) }
         guard !todo.isEmpty else { return }
         let maxClip = todo.map { $0.audio!.samples.count }.max()!
-        let correlator = Correlator(reference: master, maxClip: maxClip, rate: rate, settings: options.match)
+        let n = fftSize(atLeast: master.count + maxClip + 16)
+        // Results depend on the reference, the FFT length (padding) and the band: all in the key.
+        let m = options.match
+        let referenceKey = "\(contentKey(master))_\(n)_\(Int(rate))_\(m.lowHz)_\(m.highHz)_\(m.phatBeta)"
         let lock = NSLock()
-        var done = 0
-        let workers = min(options.workers, todo.count, Self.workersThatFit(fftSize(atLeast: master.count + maxClip + 16)))
-        DispatchQueue.concurrentPerform(iterations: workers) { w in
-            for i in stride(from: w, to: todo.count, by: workers) {
-                if options.isCancelled() { return }
-                let clip = todo[i]
-                let samples = clip.audio!.samples
-                let overlap = min(samples.count / 2, Int(4 * rate))
-                let m = correlator.match(samples, lags: (-samples.count + overlap)...(master.count - overlap))
-                lock.lock()
-                done += 1
-                if let m, m.z >= options.zGlobal, m.ratio >= options.ratioGlobal {
-                    placements[clip.id] = Placement(id: clip.id, time: m.lag / rate, method: .audio, z: m.z, ratio: m.ratio)
+        var found = [String: Match?]()
+        var search = [SyncClip]()
+        for clip in todo {
+            let key = contentKey(clip.audio!.samples)
+            if let stored = store?.get(referenceKey, key) { found[clip.id] = .some(stored) } else { search.append(clip) }
+        }
+        if found.count > 0 { log("búsqueda global: \(found.count) clips ya buscados antes") }
+        if !search.isEmpty {
+            let correlator = Correlator(reference: master, maxClip: maxClip, rate: rate, settings: options.match)
+            var done = 0
+            let workers = min(options.workers, search.count, Self.workersThatFit(n))
+            DispatchQueue.concurrentPerform(iterations: workers) { w in
+                for i in stride(from: w, to: search.count, by: workers) {
+                    if options.isCancelled() { return }
+                    let clip = search[i]
+                    let samples = clip.audio!.samples
+                    let overlap = min(samples.count / 2, Int(4 * rate))
+                    let m = correlator.match(samples, lags: (-samples.count + overlap)...(master.count - overlap))
+                    store?.put(referenceKey, contentKey(samples), m)
+                    lock.lock()
+                    found[clip.id] = .some(m)
+                    done += 1
+                    if done % 10 == 0 || done == search.count { log("búsqueda global: \(done)/\(search.count)") }
+                    lock.unlock()
                 }
-                if done % 10 == 0 || done == todo.count { log("búsqueda global: \(done)/\(todo.count)") }
-                lock.unlock()
+            }
+            store?.save()
+        }
+        for clip in todo {
+            if let m = found[clip.id] ?? nil, m.z >= options.zGlobal, m.ratio >= options.ratioGlobal {
+                placements[clip.id] = Placement(id: clip.id, time: m.lag / rate, method: .audio, z: m.z, ratio: m.ratio)
             }
         }
+    }
+
+    /// The slow part alone, to have it stored before Sync is pressed.
+    public func searchAhead() {
+        let master = buildReference()
+        matchGlobally(master)
     }
 
     /// How many clips can be correlated at once without swapping: each one needs about
@@ -275,6 +316,7 @@ public final class Syncer {
                 guard let p = placements[clip.id], p.method == .audio, abs(error) > options.clockTolerance,
                       !(p.z >= options.zStrong && p.ratio >= 1.5) else { continue }
                 placements[clip.id] = nil
+                droppedByClock.insert(clip.id)
                 log(String(format: "descarto %@: %.1f s lejos de lo que dice su reloj (z %.1f)", clip.name, error, p.z))
             }
         }
@@ -487,7 +529,8 @@ public final class Syncer {
         let devices = Set(clips.map(\.device)).subtracting([referenceDevice])
         for device in devices.sorted() where !options.isCancelled() {
             let todo = clips.filter {
-                $0.device == device && placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > 2 * Int(rate)
+                $0.device == device && placements[$0.id] == nil && !droppedByClock.contains($0.id)
+                    && ($0.audio?.samples.count ?? 0) > 2 * Int(rate)
             }
             guard !todo.isEmpty else { continue }
             // The other cameras' synced audio, end to end with a second of silence between clips.

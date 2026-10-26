@@ -112,6 +112,9 @@ final class AppModel: ObservableObject {
     private(set) var outcome: SyncOutcome?
     private let cancel = CancelFlag()
     private var readTask: Task<Void, Never>?
+    /// The slow search, started on its own once the audio is read (see SyncSession.searchAhead).
+    private let aheadCancel = CancelFlag()
+    private var aheadTask: Task<Void, Never>?
 
     nonisolated static let peaksPerSecond = 10.0
 
@@ -287,7 +290,7 @@ final class AppModel: ObservableObject {
                         ? "Listo para sincronizar."
                         : "Listo. \(failed) archivo(s) sin audio legible: se van a ubicar por su hora."
                     if images > 0 { self.message += " \(images) imagen(es) quedan como están: no tienen sonido." }
-                    next?()
+                    if let next { next() } else { self.searchAhead() }
                 }
             } catch {
                 await MainActor.run {
@@ -325,6 +328,37 @@ final class AppModel: ObservableObject {
 
     // MARK: Sync
 
+    /// While the user looks at the timeline, the global search runs and is stored, so Sync is quick.
+    private func searchAhead() {
+        guard let session else { return }
+        aheadCancel.set(false)
+        var options = prefs.sync.options
+        let cancel = aheadCancel
+        options.isCancelled = { cancel.isSet }
+        let ignoring = ignored
+        aheadTask = Task.detached(priority: .utility) { [weak self] in
+            // While the project just sits there, say how it goes.
+            session.searchAhead(options: options, ignoring: ignoring) { line in
+                guard let n = line.split(separator: " ").last?.split(separator: "/"), n.count == 2 else { return }
+                Task { @MainActor in
+                    guard let self, self.session === session, self.phase == .ready else { return }
+                    self.message = "Listo para sincronizar. Analizando el audio de fondo: \(n[0]) de \(n[1])…"
+                }
+            }
+            await MainActor.run {
+                guard let self, self.session === session, self.phase == .ready, !cancel.isSet else { return }
+                self.message = "Listo para sincronizar: el audio ya está analizado."
+            }
+        }
+    }
+
+    /// Stops the search ahead (what it found is kept) and gives what to wait for before using the session.
+    private func stopSearchAhead() -> Task<Void, Never>? {
+        aheadCancel.set(true)
+        defer { aheadTask = nil }
+        return aheadTask
+    }
+
     func synchronize() {
         guard session != nil, !busy else { return }
         if phase == .stopped || session!.audio.count + session!.problems.count < clipCount {
@@ -343,7 +377,10 @@ final class AppModel: ObservableObject {
         let cancel = self.cancel
         options.isCancelled = { cancel.isSet }
         let ignoring = ignored
+        let ahead = stopSearchAhead()
         Task.detached(priority: .userInitiated) { [weak self] in
+            // Its results are in the store; two searches at once would only double the memory.
+            await ahead?.value
             let result = Result {
                 try session.sync(options: options, ignoring: ignoring) { line in
                     Task { @MainActor in self?.message = line.prefix(1).uppercased() + line.dropFirst() }
@@ -379,6 +416,7 @@ final class AppModel: ObservableObject {
 
     func stop() {
         cancel.set(true)
+        _ = stopSearchAhead()
     }
 
     /// Marks a clip as wrongly synced (or undoes it); the next sync places it by its clock.
@@ -453,7 +491,7 @@ final class AppModel: ObservableObject {
         let keys: [URLResourceKey] = [.contentAccessDateKey, .contentModificationDateKey]
         let files = (try? FileManager.default.contentsOfDirectory(at: defaultCacheDir, includingPropertiesForKeys: keys)) ?? []
         let limit = Date().addingTimeInterval(-Double(days ?? 0) * 86400)
-        for f in files where f.pathExtension == "f32" {
+        for f in files where ["f32", "matches"].contains(f.pathExtension) {
             let v = try? f.resourceValues(forKeys: Set(keys))
             let used = v?.contentAccessDate ?? v?.contentModificationDate ?? .distantPast
             if days == nil || used < limit { try? FileManager.default.removeItem(at: f) }
