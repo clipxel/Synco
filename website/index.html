@@ -40,14 +40,12 @@
         <div class="eyebrow">Gratis · código abierto · Mac, Windows y Linux</div>
         <h1>Todas tus cámaras, <mark>en sincro</mark> por el audio.</h1>
         <p class="lead">Abrís el XML de tu línea de tiempo, tocás <b>Sincronizar</b> y vuelve a tu editor con cada clip en su lugar. Cámaras, teléfonos y grabadores, sin timecode y sin acomodar nada a mano.</p>
-        <div class="cta">
-          <a class="btn lime" id="dl-hero" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-macOS.dmg">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>
-            <span id="dl-label">Descargar para Mac</span>
-          </a>
-          <a class="btn" href="#descargar">Instalar desde la Terminal</a>
+        <div class="cta" id="dl-hero">
+          <a class="btn lime" data-os="mac" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-macOS.dmg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Mac</a>
+          <a class="btn" data-os="windows" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-Windows-Setup.exe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Windows</a>
+          <a class="btn" data-os="linux" href="https://github.com/clipxel/Synco/releases/latest/download/Synco-Linux.AppImage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-5-5m5 5 5-5M5 21h14"/></svg>Linux</a>
         </div>
-        <p class="meta"><span id="dl-meta">macOS 13 o más nuevo · Apple silicon e Intel</span> · <span class="version">última versión</span> · <a href="#descargar">otros sistemas</a></p>
+        <p class="meta"><span id="dl-meta">macOS 13 o más nuevo · Apple silicon e Intel</span> · <span class="version">última versión</span> · <a href="#descargar">más opciones</a></p>
       </div>
       <img class="hero-icon" src="assets/icon-512.png" alt="Ícono de Synco">
     </div>
@@ -250,16 +248,16 @@
   (function () {
     const ua = navigator.userAgent;
     const os = /Windows/i.test(ua) ? "windows" : /Linux|X11/i.test(ua) && !/Android/i.test(ua) ? "linux" : "mac";
+    const meta = {
+      mac: "macOS 13 o más nuevo · Apple silicon e Intel",
+      windows: "Windows 10 u 11 · 64 bits",
+      linux: "AppImage para cualquier distribución · 64 bits"
+    };
     const hero = document.getElementById("dl-hero");
-    if (os === "windows") {
-      hero.href = "https://github.com/clipxel/Synco/releases/latest/download/Synco-Windows-Setup.exe";
-      document.getElementById("dl-label").textContent = "Descargar para Windows";
-      document.getElementById("dl-meta").textContent = "Windows 10 u 11 · 64 bits";
-    } else if (os === "linux") {
-      hero.href = "https://github.com/clipxel/Synco/releases/latest/download/Synco-Linux.AppImage";
-      document.getElementById("dl-label").textContent = "Descargar para Linux";
-      document.getElementById("dl-meta").textContent = "AppImage · 64 bits";
-    }
+    const mine = hero.querySelector('[data-os="' + os + '"]');
+    hero.querySelectorAll(".btn").forEach(b => b.classList.toggle("lime", b === mine));
+    hero.prepend(mine);
+    document.getElementById("dl-meta").textContent = meta[os];
   })();
   document.getElementById("copy").addEventListener("click", e => {
     navigator.clipboard.writeText(document.getElementById("cmd").textContent)
