@@ -121,11 +121,11 @@ h2 { font-size: clamp(30px, 4vw, 44px); font-weight: 700; margin: 10px 0 12px; }
 .download .btn + .btn { margin-left: 8px; }
 .download .small { font-size: 14px; margin: 16px 0 8px; }
 .download code { font: 13px ui-monospace, Menlo, monospace; background: var(--paper); padding: 1px 5px; border-radius: 5px; }
-.download .plate { padding: 30px; }
+.download .plate { padding: 30px; min-width: 0; }
 .download h3 { font-size: 24px; margin-bottom: 10px; }
 .download p { color: var(--ink-soft); margin: 0 0 20px; }
 .term { display: flex; align-items: center; gap: 10px; background: var(--ink); color: #f2f1ec; border-radius: 12px; padding: 12px 12px 12px 16px; font: 14px/1.4 ui-monospace, "SF Mono", Menlo, monospace; }
-.term code { flex: 1; overflow-x: auto; white-space: nowrap; }
+.term code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; }
 .term button { flex: none; background: var(--lime); color: var(--ink); border: 0; border-radius: 8px; padding: 7px 12px; font: 600 13px var(--body); cursor: pointer; }
 .note { margin-top: 26px; padding: 18px 22px; border-radius: 14px; border: 1.5px dashed var(--ink-soft); font-size: 15px; color: var(--ink-soft); }
 .note b { color: var(--ink); }
