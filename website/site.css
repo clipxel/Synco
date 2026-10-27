@@ -167,3 +167,13 @@ footer nav { display: flex; gap: 18px; flex-wrap: wrap; }
   .stats { grid-template-columns: 1fr; }
   .hero { padding-top: 40px; }
 }
+
+/* The Mac install choice. */
+#mac-dialog { width: min(520px, calc(100vw - 32px)); padding: 30px; border: 1.5px solid var(--base); color: var(--ink); }
+#mac-dialog::backdrop { background: rgba(28, 31, 34, .45); }
+#mac-dialog h3 { font-size: 24px; margin: 0 0 6px; }
+#mac-dialog .small { color: var(--ink-soft); font-size: 14px; margin: 0 0 18px; }
+#mac-dialog .choice { border-top: 1px solid var(--line); padding: 18px 0 4px; }
+#mac-dialog h4 { font-size: 17px; margin: 0 0 4px; }
+#mac-dialog .choice p { color: var(--ink-soft); margin: 0 0 14px; }
+#mac-dialog .close { position: absolute; top: 14px; right: 16px; border: 0; background: none; font-size: 28px; line-height: 1; color: var(--ink-soft); cursor: pointer; }
