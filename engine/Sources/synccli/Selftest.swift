@@ -254,6 +254,15 @@ enum Selftest {
         for i in cam.indices { cam[i] = 0.8 * cam[i] + Float(0.05 * (rng.next() * 2 - 1)) }
         clips.append(SyncClip(id: "cam", name: "C0001.MP4", device: "cámara", audio: AudioTrack(samples: cam, rate: rate),
                               recordedAt: t0.addingTimeInterval(570), duration: 80))
+        // Another camera, its clock years off: one clip found by audio, one with nothing in common.
+        var cam2 = Array(take[(900 * Int(rate))..<(960 * Int(rate))])
+        for i in cam2.indices { cam2[i] = 0.7 * cam2[i] + Float(0.05 * (rng.next() * 2 - 1)) }
+        let years = 3 * 365 * 86400.0
+        clips.append(SyncClip(id: "cam2a", name: "A001.MOV", device: "teléfono", audio: AudioTrack(samples: cam2, rate: rate),
+                              recordedAt: t0.addingTimeInterval(years + 900), duration: 60))
+        let noise = (0..<(30 * Int(rate))).map { _ in Float(0.3 * (rng.next() * 2 - 1)) }
+        clips.append(SyncClip(id: "cam2b", name: "A002.MOV", device: "teléfono", audio: AudioTrack(samples: noise, rate: rate),
+                              recordedAt: t0.addingTimeInterval(2 * years), duration: 30))
         let syncer = Syncer(clips: clips, rate: rate) { _ in }
         syncer.soundOnly = ["consola"]
         let placed = Dictionary(uniqueKeysWithValues: syncer.run().map { ($0.id, $0.time) })
@@ -261,7 +270,10 @@ enum Selftest {
         let ok = abs((placed["rec1"] ?? 0) - zero - 600) < 0.01 && abs((placed["rec2"] ?? 0) - zero - 1200) < 0.01
             && abs((placed["cam"] ?? 0) - zero - 570) * Double(fps) <= 1
         print("\(ok ? "PASA " : "FALLA")  consola que corta por tamaño: los archivos van seguidos, sin huecos")
-        return ok
+        let lost = (placed["cam2b"] ?? 1e12) - zero
+        let inside = lost >= -3600 && lost <= 1500 + 3600
+        print("\(inside ? "PASA " : "FALLA")  cámara con el reloj años corrido: lo que no tiene audio en común queda dentro del evento")
+        return ok && inside
     }
 
     /// A recorder's files in name order: 22:30, 23:40, then 00:50 and 02:00 written with the first

@@ -281,21 +281,27 @@ public final class BlockCorrelator {
         self.settings = settings
     }
 
-    /// The block size for a clip: at least four times as long, so three quarters of each block
-    /// are new lags; 2^20 and up in steps of four, so clips share few tables.
+    /// The block size for a clip. Short clips: four times as long (three quarters of each block
+    /// are new lags), up to 2^22. Long ones (more than about four minutes): twice as long, from
+    /// 2^24 up, so an hour-long clip doesn't need blocks of hundreds of millions of points.
+    /// Few sizes (each one prepares the whole reference once): 2^20 and 2^22, then 2^24, 2^26, 2^28.
     static func blockSize(for count: Int) -> Int {
-        var b = 1 << 20
-        while b < 4 * count { b *= 4 }
+        for b in [1 << 20, 1 << 22] where b >= 4 * count { return b }
+        var b = 1 << 24
+        while b < 2 * count { b *= 4 }
         return b
     }
 
-    /// The reference is read as if it had b/4 zeros in front (lags down to minus a clip's length);
-    /// block k starts there at k * 3b/4.
+    /// How far back a block reaches before its first new lag: the longest clip it serves.
+    static func reach(_ b: Int) -> Int { b <= 1 << 22 ? b / 4 : b / 2 }
+
+    /// The reference is read as if it had `reach(b)` zeros in front (lags down to minus a clip's
+    /// length); block k starts there at k * (b - reach(b)).
     private func table(_ b: Int) -> [Spectrum] {
         lock.lock(); defer { lock.unlock() }
         if let t = tables[b] { return t }
         let plan = FFTPlan.get(b)
-        let hop = 3 * b / 4, pad = b / 4
+        let pad = Self.reach(b), hop = b - pad
         let count = (reference.count + pad + hop - 1) / hop
         var out = [Spectrum?](repeating: nil, count: count)
         let outLock = NSLock()
@@ -321,7 +327,7 @@ public final class BlockCorrelator {
     public func match(_ clip: [Float], lags: ClosedRange<Int>) -> Match? {
         let b = Self.blockSize(for: clip.count)
         let plan = FFTPlan.get(b)
-        let half = b / 2, hop = 3 * b / 4, pad = b / 4
+        let half = b / 2, pad = Self.reach(b), hop = b - pad
         let blocks = table(b)
         let lo = max(lags.lowerBound, -clip.count + 1), hi = min(lags.upperBound, reference.count - 1)
         guard lo < hi else { return nil }

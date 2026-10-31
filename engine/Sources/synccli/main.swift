@@ -143,6 +143,19 @@ case "drift":
         print(String(format: "%@\t%.0f\t%+.0f\t%+.0f\t%+.0f", c.name, a.duration / 60, e0.0 * 1000, e1.0 * 1000, ppm))
     }
 
+case "bench":
+    // synccli bench <horas de referencia> <minutos de clip>: one search in blocks, timed.
+    let hours = Double(args[2]) ?? 5, minutes = args.count > 3 ? Double(args[3]) ?? 60 : 60
+    var rng = SystemRandomNumberGenerator()
+    let ref = (0..<Int(hours * 3600 * rate)).map { _ in Float.random(in: -1...1, using: &rng) }
+    let at = Int(Double(ref.count) * 0.4)
+    let clip = Array(ref[at..<(at + Int(minutes * 60 * rate))])
+    let t0 = Date()
+    let c = BlockCorrelator(reference: ref, rate: rate)
+    let m = c.match(clip, lags: (-clip.count + 16000)...(ref.count - 16000))
+    print(String(format: "%.0f min contra %.1f h: %.1f s (encontrado en %.1f s, real %.1f s; z %.0f)",
+                 minutes, hours, Date().timeIntervalSince(t0), (m?.lag ?? 0) / rate, Double(at) / rate, m?.z ?? 0))
+
 case "times":
     let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))
     let f = DateFormatter()

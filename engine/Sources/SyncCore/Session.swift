@@ -131,9 +131,11 @@ public final class SyncSession {
         let inputs = project.clips.filter { twinOf[$0.fileID] == nil }.map { c in
             SyncClip(id: c.fileID, name: c.name, device: c.device,
                      audio: ignoring.contains(c.fileID) ? nil : audio[c.fileID],
-                     // SYNCO_TEST_NO_CAMERA_DATES: cameras without usable dates (as copies on Windows had), to time that case.
+                     // SYNCO_TEST_NO_CAMERA_DATES: cameras whose dates are a copy's (in name order, ten
+                     // seconds apart, nothing to do with when they recorded), to time that case.
                      recordedAt: ProcessInfo.processInfo.environment["SYNCO_TEST_NO_CAMERA_DATES"] != nil && c.hasVideo
-                        ? Date(timeIntervalSince1970: 1_800_000_000 + Double(c.name.hashValue % 1000))
+                        ? Date(timeIntervalSince1970: 1_800_000_000 + 10 * Double(project.clips.filter { $0.device == c.device }
+                            .map(\.name).sorted { $0.localizedStandardCompare($1) == .orderedAscending }.firstIndex(of: c.name) ?? 0))
                         : recordingStart(url: c.url),
                      modifiedAt: (try? c.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
                      duration: audio[c.fileID]?.duration ?? Double(c.frames) / Double(project.fps))

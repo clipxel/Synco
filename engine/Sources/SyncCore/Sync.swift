@@ -134,8 +134,13 @@ public final class Syncer {
         }
         if options.speed == .fast {
             matchGlobally(master, only: calibrationSample())
+            lap("muestra")
             calibrateClocks()
-            // A device whose clock can't be used has nothing to search near: its clips everywhere.
+            // A device whose clock can't be used has nothing to search near: its clips are looked
+            // for between the ones of the sample (a short stretch each), and only what is still
+            // missing after that across the whole event.
+            for _ in 0..<8 where !options.isCancelled() { if matchBetween(master) == 0 { break }; calibrateClocks() }
+            lap("vecinos de la muestra")
             let blind = clips.filter { placements[$0.id] == nil && (deviceOffsets[$0.device] == nil || clockPosition($0) == nil) }
             if !blind.isEmpty, !options.isCancelled() { matchGlobally(master, only: Set(blind.map(\.id))) }
         } else {
@@ -870,6 +875,12 @@ public final class Syncer {
     // MARK: Fallback
 
     func placeByClock() {
+        // The event as audio placed it: a clip guessed by its date can't land far outside it. A
+        // camera whose clock is set to another day or year would otherwise stretch the sequence
+        // to thousands of hours.
+        let synced = clips.compactMap { c in placements[c.id].flatMap { $0.method.synced ? ($0.time, $0.time + c.duration) : nil } }
+        let eventStart = (synced.map(\.0).min() ?? 0) - 3600, eventEnd = (synced.map(\.1).max() ?? 0) + 3600
+        func inside(_ t: Double, _ clip: SyncClip) -> Bool { synced.isEmpty || (t >= eventStart && t + clip.duration <= eventEnd) }
         for clip in clips where placements[clip.id] == nil {
             // Only for clips their audio didn't place: between the synced clip recorded before
             // and the one recorded after, in proportion to its own time between theirs. Whether
@@ -878,10 +889,12 @@ public final class Syncer {
                 placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "entre sus vecinos, por su hora")
             } else if unreliableClocks.contains(clip.device), let t = placeByOrder(clip) {
                 placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "por orden (reloj no confiable)")
-            } else if let clock = clockPosition(clip) {
+            } else if let clock = clockPosition(clip), inside(clock + (deviceOffsets[clip.device] ?? 0), clip) {
                 let offset = deviceOffsets[clip.device] ?? 0
                 placements[clip.id] = Placement(id: clip.id, time: clock + offset, method: .clock,
                                                 note: deviceOffsets[clip.device] == nil ? "reloj sin calibrar" : "")
+            } else if let t = placeByOrder(clip), inside(t, clip) {
+                placements[clip.id] = Placement(id: clip.id, time: t, method: .clock, note: "por orden (su fecha cae fuera del evento)")
             } else {
                 placements[clip.id] = Placement(id: clip.id, time: 0, method: .unplaced)
             }
