@@ -306,7 +306,51 @@ public final class AudioCache {
 /// 3. the file's creation date otherwise.
 /// The broadcast header's origination *time* is not used: recorders often write it
 /// when the file is closed, which for a long take is more than an hour off.
+///
+/// Files of one folder are taken in the order of their names (cameras and recorders number
+/// them as they record): one dated hours before the file named before it crossed midnight
+/// on a clock that only knows the time of day, and goes a day later.
 public func recordingStart(url: URL) -> Date? {
+    let folder = url.deletingLastPathComponent()
+    startLock.lock()
+    if let dates = folderStarts[folder.path] { startLock.unlock(); return dates[url.path] ?? rawRecordingStart(url: url) }
+    startLock.unlock()
+    let files = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? [])
+        .filter { ProjectBuilder.isMedia($0) }
+        .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+    let fixed = fixDayRollover(files.map { rawRecordingStart(url: $0) })
+    var dates = [String: Date]()
+    for (f, d) in zip(files, fixed) { if let d { dates[f.path] = d } }
+    startLock.lock()
+    folderStarts[folder.path] = dates
+    startLock.unlock()
+    return dates[url.path] ?? rawRecordingStart(url: url)
+}
+
+private var folderStarts = [String: [String: Date]]()
+
+/// Recording starts in the order the files were recorded: one that comes back more than an hour
+/// from the one before goes one or two days later, if that puts it within eight hours after it
+/// (a set going past midnight; files named any which way are left as they are).
+public func fixDayRollover(_ dates: [Date?]) -> [Date?] {
+    var out = dates
+    var last: Date?
+    for i in out.indices {
+        guard let d = out[i] else { continue }
+        if let p = last, d < p.addingTimeInterval(-3600) {
+            for days in 1...2 {
+                let moved = d.addingTimeInterval(Double(days) * 86400)
+                let gap = moved.timeIntervalSince(p)
+                if gap >= -3600 && gap < 8 * 3600 { out[i] = moved; break }
+            }
+        }
+        last = out[i]
+    }
+    return out
+}
+
+/// One file's recording start, on its own (see `recordingStart`).
+func rawRecordingStart(url: URL) -> Date? {
     let key = url.path
     startLock.lock()
     if let cached = startCache[key] { startLock.unlock(); return cached }
@@ -316,7 +360,9 @@ public func recordingStart(url: URL) -> Date? {
     let fileDate = values?.creationDate ?? values?.contentModificationDate
     var date: Date?
     switch url.pathExtension.lowercased() {
-    case "wav", "bwf": date = broadcastStart(url: url, near: fileDate)
+    // Which day a recorder's time of day belongs to: the modification date (when the file was
+    // closed) survives copies; the creation date becomes the day of the copy on Windows.
+    case "wav", "bwf": date = broadcastStart(url: url, near: values?.contentModificationDate ?? fileDate)
     case "mov", "mp4", "m4v", "mxf", "mts", "m4a":
         // Inside the file it is often whole seconds only; the file date has fractions.
         // Keep the file date when both agree, the metadata when the file date was lost in a copy.

@@ -140,6 +140,7 @@ enum Selftest {
                               recorder: recorderName) && ok
         ok = try fromFolders(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth) }, recorder: recorderName) && ok
         ok = mediaInfo() && ok
+        ok = midnight() && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
         return ok
     }
@@ -221,6 +222,21 @@ enum Selftest {
             }
         }
         print("\(ok ? "PASA " : "FALLA")  proyecto armado desde carpetas: 3 pistas, \(project.clips.count) clips, sincronizado igual")
+        return ok
+    }
+
+    /// A recorder's files in name order: 22:30, 23:40, then 00:50 and 02:00 written with the first
+    /// day (its clock only knows the time of day). Those two go to the next day; nothing else moves,
+    /// and files named in no particular order are left alone.
+    static func midnight() -> Bool {
+        let day = DateComponents(calendar: Calendar(identifier: .gregorian), timeZone: .current,
+                                 year: 2026, month: 3, day: 7).date!
+        func at(_ h: Double) -> Date { day.addingTimeInterval(h * 3600) }
+        let fixed = fixDayRollover([at(22.5), at(23.67), at(0.83), at(2), nil, at(2.5)])
+        let night = fixed == [at(22.5), at(23.67), at(24.83), at(26), nil, at(26.5)]
+        let untouched = fixDayRollover([at(23), at(10), at(12)]) == [at(23), at(10), at(12)]
+        let ok = night && untouched
+        print("\(ok ? "PASA " : "FALLA")  set que pasa la medianoche: los archivos siguen en el orden en que se grabaron")
         return ok
     }
 
