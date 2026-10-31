@@ -163,6 +163,7 @@ struct ReportSheet: View {
 
 struct GeneralSettings: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var updater: Updater
     @State private var size: Int64 = 0
 
     var body: some View {
@@ -173,6 +174,15 @@ struct GeneralSettings: View {
                     Button("Donar") { Contact.open(Contact.donate) }
                     Button("Instagram \(Contact.handle)") { Contact.open(Contact.instagram) }
                     Button("Reportar un problema…") { Contact.sendReport() }
+                }
+            }
+            Section("Actualizaciones") {
+                HStack {
+                    Text("Tenés la versión \(Contact.version). Synco se fija solo cada vez que lo abrís.")
+                        .font(Theme.Font.sm)
+                    Spacer()
+                    Button("Buscar actualizaciones…") { updater.check(quiet: false) }
+                        .disabled(updater.state == .checking)
                 }
             }
             Section("Al terminar") {

@@ -263,7 +263,7 @@ function render() {
     const badge = { reading: ["leyendo audio", "var(--accent)"], ready: ["sin sincronizar", "var(--muted)"], matching: ["sincronizando", "var(--accent)"],
       done: ["sincronizado", "var(--success)"], stopped: ["detenido", "var(--warning)"], failed: ["error", "var(--danger)"] }[S.phase] || ["", ""];
     $("title").innerHTML = "";
-    const parts = [["file", S.path.split(/[\\/]/).pop()], ["meta", "›"], ["meta", p.sequence], ["meta", fmtLen(totalDuration())], ["meta", `${p.fps} cps`]];
+    const parts = [["file", S.path.split(/[\\/]/).pop()], ["meta", "›"], ["meta", p.sequence], ["meta", fmtLen(totalDuration())], ["meta", `${Number.isInteger(p.fps) ? p.fps : p.fps.toFixed(3).replace(/0+$/, "").replace(".", ",")} cps`]];
     for (const [cls, text] of parts) { const s = document.createElement("span"); s.className = cls; s.textContent = text + " "; $("title").append(s); }
     $("title").className = "";
     $("title").style.cssText = "display:flex;gap:10px;align-items:center;min-width:0";
@@ -650,9 +650,14 @@ async function showGeneral() {
   const version = await B.version();
   sheet(`Synco ${version}`, (s) => {
     note(s, "Synco es gratis y siempre lo va a ser. Tu aporte ayuda a seguir mejorándolo.");
+    const u = document.createElement("div"); u.className = "row"; u.style.justifyContent = "space-between"; u.style.alignItems = "center";
+    const uv = document.createElement("span"); uv.className = "note"; uv.style.margin = "0";
+    uv.textContent = `Tenés la versión ${version}. Synco se fija solo cada vez que lo abrís.`;
+    u.append(uv, button("Buscar actualizaciones…", () => checkUpdate(false), true));
+    s.append(u);
     const r = document.createElement("div"); r.className = "row"; r.style.justifyContent = "flex-start";
-    r.append(button("Donar", () => B.openURL(LINKS.donate), true), button("Instagram @nanobrunetti", () => B.openURL(LINKS.instagram)),
-      button("Reportar un problema…", reportProblem), button("Buscar actualizaciones…", () => checkUpdate(false)));
+    r.append(button("Donar", () => B.openURL(LINKS.donate)), button("Instagram @nanobrunetti", () => B.openURL(LINKS.instagram)),
+      button("Reportar un problema…", reportProblem));
     s.append(r);
     sound = check(s, "Hacer un sonido cuando termina la sincronización", prefs.sound);
     info = document.createElement("div"); info.className = "note";
@@ -690,7 +695,7 @@ async function checkUpdate(quiet) {
     const r = await B.send("checkUpdate", { current: await B.version() });
     if (r.available) { U.info = r; U.step = ""; renderUpdate(); }
     else if (!quiet) updateCard("Synco está al día", "Tenés la última versión.", (c) => {
-      const chip = document.createElement("div"); chip.className = "notes"; chip.textContent = `✔ Versión ${"" }`; chip.textContent = "✔ Versión " + (r.version || "");
+      const chip = document.createElement("div"); chip.className = "notes"; chip.textContent = "✔ Versión " + (r.version || "");
       c.append(chip);
       c.append(rowOf(button("Listo", closeVeil, true)));
     });

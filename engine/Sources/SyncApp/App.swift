@@ -83,6 +83,7 @@ struct SyncoApp: App {
         Settings {
             GeneralSettings()
                 .environmentObject(model)
+                .environmentObject(updater)
                 .preferredColorScheme(.dark)
         }
     }
