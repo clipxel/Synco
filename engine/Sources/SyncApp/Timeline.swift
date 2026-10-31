@@ -14,31 +14,56 @@ struct TimelineView: View {
     @State private var dragFrom: (x: CGFloat, start: Double)?
     @State private var scrollMonitor: Any?
     @State private var laneWidth: CGFloat = 1
+    /// The row a drop would land on while dragging files over (the strip under the tracks is `tracks.count`).
+    @State private var dropRow: Int?
 
     var body: some View {
         GeometryReader { geo in
             let laneW = max(1, geo.size.width - Theme.Size.trackHeaderW)
             let total = max(model.totalDuration, 1)
             let pps = zoom ?? Double(laneW) / total
-            let lanesH = geo.size.height - Theme.Size.overviewH - 28
-            let rowH = max(Theme.Size.trackMinH, lanesH / CGFloat(max(model.tracks.count, 1)))
+            let empty = model.tracks.isEmpty
+            let lanesH = geo.size.height - (empty ? 0 : Theme.Size.overviewH + 28)
+            // Under the tracks, a strip to drop folders on for new tracks; with none yet, all of it.
+            let newH: CGFloat = empty ? max(lanesH, 240) : 64
+            let rowH = max(Theme.Size.trackMinH, (lanesH - newH) / CGFloat(max(model.tracks.count, 1)))
             VStack(spacing: 0) {
-                ZoomBar(fit: { zoom = nil; viewStart = 0 },
-                        zoomIn: { setZoom(pps * 2, laneW: laneW, total: total) },
-                        zoomOut: { setZoom(pps / 2, laneW: laneW, total: total) },
-                        pps: pps)
-                ScrollView(.vertical) {
-                    HStack(spacing: 0) {
-                        VStack(spacing: 0) {
-                            ForEach(model.tracks) { t in TrackHeader(track: t).frame(height: rowH) }
-                        }
-                        .frame(width: Theme.Size.trackHeaderW)
-                        lanes(width: laneW, rowH: rowH, pps: pps)
-                    }
+                if !empty {
+                    ZoomBar(fit: { zoom = nil; viewStart = 0 },
+                            zoomIn: { setZoom(pps * 2, laneW: laneW, total: total) },
+                            zoomOut: { setZoom(pps / 2, laneW: laneW, total: total) },
+                            pps: pps)
                 }
-                Overview(viewStart: $viewStart, visible: Double(laneW) / pps, total: total)
-                    .frame(height: Theme.Size.overviewH)
-                    .padding(.leading, Theme.Size.trackHeaderW)
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        if !empty {
+                            HStack(spacing: 0) {
+                                VStack(spacing: 0) {
+                                    ForEach(model.tracks) { t in TrackHeader(track: t).frame(height: rowH) }
+                                }
+                                .frame(width: Theme.Size.trackHeaderW)
+                                lanes(width: laneW, rowH: rowH, pps: pps)
+                            }
+                            .overlay(alignment: .topLeading) {
+                                if let r = dropRow, r < model.tracks.count {
+                                    RoundedRectangle(cornerRadius: Theme.Size.radiusMd)
+                                        .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                                        .background(Theme.accent.opacity(0.08))
+                                        .frame(height: rowH - 2)
+                                        .offset(y: CGFloat(r) * rowH + 1)
+                                        .allowsHitTesting(false)
+                                }
+                            }
+                        }
+                        NewTrackLane(targeted: dropRow == model.tracks.count).frame(height: newH)
+                    }
+                    .onDrop(of: [.fileURL], delegate: TimelineDrop(model: model, rowH: rowH, row: $dropRow))
+                }
+                if !empty {
+                    Overview(viewStart: $viewStart, visible: Double(laneW) / pps, total: total)
+                        .frame(height: Theme.Size.overviewH)
+                        .padding(.leading, Theme.Size.trackHeaderW)
+                }
             }
             .onAppear { laneWidth = laneW; installScrollMonitor(total: total) }
             .onChange(of: laneW) { laneWidth = $0 }
@@ -189,7 +214,115 @@ struct TimelineView: View {
     }
 }
 
+/// Files dragged over the timeline: onto a track they go into it, below the tracks they make new ones.
+@MainActor
+struct TimelineDrop: DropDelegate {
+    let model: AppModel
+    let rowH: CGFloat
+    @Binding var row: Int?
+
+    /// Only a project built from folders takes files into its tracks.
+    private func target(_ y: CGFloat) -> Int {
+        let count = model.tracks.count
+        guard model.isBuilt else { return count }
+        return min(count, max(0, Int(y / rowH)))
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: [.fileURL]) && model.phase != .matching }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        row = target(info.location.y)
+        return DropProposal(operation: .copy)
+    }
+    func dropExited(info: DropInfo) { row = nil }
+    func performDrop(info: DropInfo) -> Bool {
+        let r = target(info.location.y)
+        row = nil
+        let track = r < model.tracks.count ? model.tracks[r] : nil
+        loadURLs(info.itemProviders(for: [.fileURL])) { model.drop($0, onto: track) }
+        return true
+    }
+}
+
+/// The strip under the tracks: drop folders or clips here for new tracks. With no project, the
+/// whole timeline, with what to do and the recent projects.
+struct NewTrackLane: View {
+    @EnvironmentObject var model: AppModel
+    let targeted: Bool
+
+    var body: some View {
+        let empty = model.tracks.isEmpty
+        HStack(spacing: 0) {
+            if !empty {
+                Image(systemName: "plus")
+                    .font(.system(size: 16))
+                    .foregroundStyle(targeted ? Theme.accent : Theme.textMuted)
+                    .frame(width: Theme.Size.trackHeaderW)
+                    .frame(maxHeight: .infinity)
+                    .background(Theme.surface)
+            }
+            ZStack {
+                RoundedRectangle(cornerRadius: Theme.Size.radiusMd)
+                    .stroke(targeted ? Theme.accent : Theme.border, style: StrokeStyle(lineWidth: targeted ? 2 : 1, dash: [8, 6]))
+                    .background(RoundedRectangle(cornerRadius: Theme.Size.radiusMd).fill(targeted ? Theme.accent.opacity(0.08) : .clear))
+                    .padding(empty ? Theme.Size.space4 : Theme.Size.space2)
+                if empty { start } else {
+                    Text(model.isBuilt ? "Soltá acá una carpeta o clips para crear otra pista"
+                                       : "Soltá acá carpetas para empezar un proyecto nuevo con ellas")
+                        .font(Theme.Font.base)
+                        .foregroundStyle(targeted ? Theme.accent : Theme.textMuted)
+                }
+            }
+        }
+        .background(Theme.trackBg)
+    }
+
+    private var start: some View {
+        VStack(spacing: Theme.Size.space4) {
+            Image(systemName: "rectangle.stack.badge.plus")
+                .font(.system(size: 44))
+                .foregroundStyle(targeted ? Theme.accent : Theme.textMuted)
+            Text("Soltá acá las carpetas de tus cámaras y grabadores")
+                .font(Theme.Font.lg)
+            Text("Cada carpeta es una pista, con sus tomas en el orden en que se grabaron. Después podés soltar más carpetas o clips sobre una pista para sumarlos, o abajo de todo para crear otra. También podés soltar el XML de tu editor.")
+                .font(Theme.Font.base)
+                .foregroundStyle(Theme.textMuted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 520)
+            HStack(spacing: Theme.Size.space2) {
+                ActionButton(title: "Elegir carpetas…", systemImage: "folder.badge.plus", primary: true) { model.chooseFolders() }
+                ActionButton(title: "Abrir un XML…", systemImage: "doc.text", primary: false) { model.chooseFile() }
+            }
+            let recents = model.prefs.recents.filter { FileManager.default.fileExists(atPath: $0) }
+            if !recents.isEmpty {
+                VStack(alignment: .leading, spacing: Theme.Size.space1) {
+                    Text("Recientes").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
+                    ForEach(recents, id: \.self) { path in
+                        Button {
+                            model.open(URL(fileURLWithPath: path))
+                        } label: {
+                            HStack {
+                                Image(systemName: path.hasPrefix(ProjectBuilder.projectsDir.path) ? "folder" : "doc.text")
+                                Text((path as NSString).lastPathComponent)
+                                if !path.hasPrefix(ProjectBuilder.projectsDir.path) {
+                                    Text((path as NSString).deletingLastPathComponent)
+                                        .foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
+                                }
+                            }
+                            .font(Theme.Font.base)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(maxWidth: 520, alignment: .leading)
+                .padding(.top, Theme.Size.space4)
+            }
+        }
+        .padding(Theme.Size.space5)
+    }
+}
+
 struct TrackHeader: View {
+    @EnvironmentObject var model: AppModel
     let track: TrackRow
 
     var body: some View {
@@ -205,6 +338,11 @@ struct TrackHeader: View {
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.border).frame(height: 1) }
         .help("\(track.clips.count) clips en \(track.id)")
         .accessibilityElement(children: .combine)
+        .contextMenu {
+            if model.isBuilt {
+                Button("Quitar esta pista") { model.removeTrack(track) }.disabled(model.busy)
+            }
+        }
     }
 }
 

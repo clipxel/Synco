@@ -40,6 +40,7 @@ struct SyncoApp: App {
             }
             CommandGroup(replacing: .newItem) {
                 Button("Abrir XML…") { model.chooseFile() }.keyboardShortcut("o")
+                Button("Armar desde carpetas…") { model.chooseFolders() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Menu("Abrir reciente") {
                     ForEach(model.prefs.recents, id: \.self) { path in
                         Button((path as NSString).lastPathComponent) { model.open(URL(fileURLWithPath: path)) }

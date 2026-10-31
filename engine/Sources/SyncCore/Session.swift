@@ -63,6 +63,9 @@ public struct SyncOutcome {
     public let referenceIsRecorder: Bool
     /// Things the user should know before trusting the result.
     public let warnings: [String]
+    /// Fast mode searches most clips only near their clock: one found there as clearly as a
+    /// search of the whole event demands (these z and ratio) counts as exact.
+    public var strongNear: (z: Float, ratio: Float)? = nil
 
     public var synced: Int { placements.filter { $0.method.synced }.count }
 
@@ -72,7 +75,10 @@ public struct SyncOutcome {
         // A recorder's files are placed by their exact start times; a camera's by its file dates,
         // which can be export times: only blue when another camera confirms them.
         case .reference: return referenceIsRecorder || confirmed.contains(p.id) ? .exact : .guessed
-        case .audioNear: return confirmed.contains(p.id) ? .exact : .approximate
+        case .audioNear:
+            if confirmed.contains(p.id) { return .exact }
+            if let s = strongNear, p.z >= s.z, p.ratio >= s.ratio { return .exact }
+            return .approximate
         case .clock, .unplaced: return .guessed
         }
     }
@@ -141,6 +147,12 @@ public final class SyncSession {
         let duration = { (c: ProjectClip) in self.audio[c.fileID]?.duration ?? Double(c.frames) / Double(self.project.fps) }
         let twinOf = Self.twins(project.clips, duration: duration)
         makeSyncer(options: options, ignoring: ignoring, twinOf: twinOf, log: log).searchAhead()
+    }
+
+    /// Diagnostics: the global search done whole and in blocks (see Syncer.compareSearches).
+    public func compareSearches() -> [(name: String, whole: Match?, blocks: Match?)] {
+        let duration = { (c: ProjectClip) in self.audio[c.fileID]?.duration ?? Double(c.frames) / Double(self.project.fps) }
+        return makeSyncer(options: SyncOptions(), ignoring: [], twinOf: Self.twins(project.clips, duration: duration), log: { _ in }).compareSearches()
     }
 
     /// Forgets a file's audio, after it was relinked to another path.
@@ -230,9 +242,11 @@ public final class SyncSession {
                     + "Sus clips solo quedan en azul si otra cámara los confirma.")
             }
         }
-        return SyncOutcome(placements: result, starts: starts, checks: checks, overlaps: overlaps,
-                           seconds: Date().timeIntervalSince(started), confirmed: confirmed,
-                           referenceIsRecorder: referenceIsRecorder, warnings: warnings)
+        var outcome = SyncOutcome(placements: result, starts: starts, checks: checks, overlaps: overlaps,
+                                  seconds: Date().timeIntervalSince(started), confirmed: confirmed,
+                                  referenceIsRecorder: referenceIsRecorder, warnings: warnings)
+        if options.speed == .fast { outcome.strongNear = (options.zGlobal, options.ratioGlobal) }
+        return outcome
     }
 
     /// Copies of one recording on the same device (an original and the version converted for

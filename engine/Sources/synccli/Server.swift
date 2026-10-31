@@ -61,10 +61,12 @@ final class Server {
     private func handle(_ cmd: String, _ msg: [String: Any]) throws -> Any {
         switch cmd {
         case "open": return try open(msg["path"] as? String ?? "")
-        case "read": return try read()
+        case "read": return try read((msg["options"] as? [String: Any])?["speed"] as? String)
         case "sync": return try sync(msg)
         case "export": return try export(msg)
         case "relink": return try relink(msg["folder"] as? String ?? "")
+        case "drop": return try drop(msg["paths"] as? [String] ?? [], track: msg["track"] as? String)
+        case "removeTrack": return try removeTrack(msg["track"] as? String ?? "")
         case "cacheSize": return ["bytes": cacheSize()]
         case "clearCache": clearCache(days: msg["days"] as? Int); return ["bytes": cacheSize()]
         case "checkUpdate": return try checkUpdate(msg)
@@ -85,11 +87,56 @@ final class Server {
         return describe(project, path: path)
     }
 
+    /// Whether the open project is one Synco built from dropped folders (so it takes more of them).
+    private var isBuilt: Bool {
+        fileURL?.deletingLastPathComponent().standardizedFileURL.path == ProjectBuilder.projectsDir.standardizedFileURL.path
+    }
+
+    /// Folders and clips dropped on the timeline: into the track named `track`, or as new tracks.
+    /// A project from an editor's XML is the editor's: folders dropped on it start a new one.
+    private func drop(_ paths: [String], track: String?) throws -> [String: Any] {
+        let current = isBuilt ? session.flatMap { ProjectBuilder.sources(of: $0.project) } ?? [] : []
+        let sources = try ProjectBuilder.adding(paths.map { URL(fileURLWithPath: $0) }, to: current, track: isBuilt ? track : nil)
+        return try rebuild(sources)
+    }
+
+    private func removeTrack(_ track: String) throws -> [String: Any] {
+        guard isBuilt, let session else { throw ServerError("no hay un proyecto armado desde carpetas") }
+        let sources = (ProjectBuilder.sources(of: session.project) ?? []).filter { $0.name != track }
+        if sources.isEmpty {
+            stopAhead()
+            self.session = nil
+            outcome = nil
+            fileURL = nil
+            return ["closed": true]
+        }
+        return try rebuild(sources)
+    }
+
+    /// Writes the built project's XML again with these tracks (in Synco's own folder) and opens it.
+    private func rebuild(_ sources: [ProjectBuilder.Source]) throws -> [String: Any] {
+        stopAhead()
+        let built = isBuilt
+        let name = built ? session?.project.sequenceName ?? "Proyecto"
+            : ProjectBuilder.commonFolder(sources.map(\.folder))?.lastPathComponent ?? sources[0].name
+        let url = built ? fileURL! : ProjectBuilder.newProjectURL(name: name)
+        let skipped = try ProjectBuilder.build(sources, name: name, to: url) { done, total in
+            self.send(["event": "build", "done": done, "total": total])
+        }
+        var result = try open(url.path)
+        result["skipped"] = skipped.map(\.lastPathComponent)
+        return result
+    }
+
     private func describe(_ project: FCP7Project, path: String) -> [String: Any] {
         let iso = ISO8601DateFormatter()
         return [
             "file": (path as NSString).lastPathComponent,
             "path": path,
+            "built": isBuilt,
+            // Where to offer saving the result: for a built project, the shoot's folder.
+            "exportFolder": (isBuilt ? ProjectBuilder.commonFolder(Array(Set(project.clips.map { $0.url.deletingLastPathComponent() }))) : nil)?.path
+                ?? (path as NSString).deletingLastPathComponent,
             "sequence": project.sequenceName,
             "fps": project.fps,
             "skippedImages": project.skippedImages,
@@ -99,13 +146,14 @@ final class Server {
                     "folder": (c.folder as NSString).lastPathComponent, "folderPath": c.folder, "path": c.url.path,
                     "hasVideo": c.hasVideo, "frames": c.frames, "exists": c.exists,
                 ]
+                if let name = c.deviceName { d["deviceName"] = name }
                 if let date = recordingStart(url: c.url) { d["recordedAt"] = iso.string(from: date) }
                 return d
             },
         ]
     }
 
-    private func read() throws -> [String: Any] {
+    private func read(_ speed: String?) throws -> [String: Any] {
         guard let session else { throw ServerError("no hay proyecto abierto") }
         cancel.set(false)
         try session.readAudio(progress: { done, total in self.send(["event": "read", "done": done, "total": total]) },
@@ -131,14 +179,15 @@ final class Server {
             peaks[id] = Data(bytes).base64EncodedString()
             durations[id] = track.duration
         }
-        startAhead(session)
+        startAhead(session, speed: speed.flatMap(Speed.init(rawValue:)) ?? .normal)
         return ["peaks": peaks, "durations": durations, "problems": session.problems]
     }
 
-    private func startAhead(_ session: SyncSession) {
+    private func startAhead(_ session: SyncSession, speed: Speed) {
         stopAhead()
         aheadCancel.set(false)
         var options = SyncOptions()
+        options.speed = speed
         options.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
         let flag = aheadCancel
         options.isCancelled = { flag.isSet }
@@ -166,6 +215,7 @@ final class Server {
         default: break
         }
         options.window = prefs["window"] as? Double ?? 20
+        options.speed = (prefs["speed"] as? String).flatMap(Speed.init(rawValue:)) ?? .normal
         options.match.lowHz = (prefs["band"] as? String) == "wide" ? 60 : 100
         options.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
         let flag = cancel

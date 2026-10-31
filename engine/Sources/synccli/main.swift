@@ -15,6 +15,7 @@ func usage() -> Never {
     print("""
     uso:
       synccli sync <entrada.xml> <salida.xml> [informe.md]   sincroniza un proyecto de Premiere (FCP 7 XML)
+      synccli build <salida.xml> <carpeta>...                arma el proyecto desde carpetas: cada carpeta, una pista
       synccli pair <referencia> <clip>                       prueba una sola comparación
       synccli serve                                          motor para la app de Windows y Linux (JSON por stdin/stdout)
       synccli selftest <carpeta>                             proyecto sintético con desfases conocidos: tiene que dar exacto
@@ -37,6 +38,14 @@ if args.count >= 3, args[1] == "selftest" {
 guard args.count >= 3 else { usage() }
 
 switch args[1] {
+case "build" where args.count >= 4:
+    let output = URL(fileURLWithPath: args[2])
+    let sources = ProjectBuilder.sources(from: args[3...].map { URL(fileURLWithPath: $0) })
+    for s in sources { print("pista \(s.name): \(s.files.count) archivos (\(s.folder.path))") }
+    let skipped = try ProjectBuilder.build(sources, name: output.deletingPathExtension().lastPathComponent, to: output)
+    for f in skipped { print("sin imagen ni sonido, se deja afuera: \(f.lastPathComponent)") }
+    print("XML: \(output.path)")
+
 case "pair" where args.count >= 4:
     let ref = try cache.load(URL(fileURLWithPath: args[2]), rate: rate)
     var clip = try cache.load(URL(fileURLWithPath: args[3]), rate: rate)
@@ -59,7 +68,9 @@ case "sync" where args.count >= 4:
     try session.readAudio(progress: { done, total in
         if done % 20 == 0 || done == total { print("audio leído: \(done)/\(total)") }
     })
-    let outcome = try session.sync { print($0) }
+    var options = SyncOptions()
+    if let v = ProcessInfo.processInfo.environment["SYNCO_SPEED"].flatMap(Speed.init(rawValue:)) { options.speed = v }
+    let outcome = try session.sync(options: options) { print($0) }
     var export = ExportOptions()
     export.sequenceSuffix = ""
     export.writeReport = false
@@ -72,6 +83,20 @@ case "sync" where args.count >= 4:
                  outcome.synced, outcome.placements.count, 100 * Double(outcome.synced) / Double(outcome.placements.count),
                  agreed, outcome.checks.count, outcome.overlaps.count))
     print("XML: \(output.path)\ninforme: \(reportURL.path)")
+
+case "compare":
+    // The global search whole and in blocks, side by side, for every clip.
+    let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))
+    let session = SyncSession(project: project, cache: cache, rate: rate)
+    try session.readAudio()
+    let t0 = Date()
+    let rows = session.compareSearches()
+    print(String(format: "%.0f s", Date().timeIntervalSince(t0)))
+    for r in rows {
+        let w = r.whole, b = r.blocks
+        print(String(format: "%@\t%.3f\t%.3f\t%.1f\t%.1f\t%.2f\t%.2f", r.name, (w?.lag ?? 0) / rate, (b?.lag ?? 0) / rate,
+                     w?.z ?? 0, b?.z ?? 0, w?.ratio ?? 0, b?.ratio ?? 0))
+    }
 
 case "times":
     let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))

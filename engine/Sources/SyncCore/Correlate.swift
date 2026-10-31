@@ -262,3 +262,137 @@ public final class Correlator {
         return Match(lag: lag, z: bestValue / sigma, z2: second / sigma, lag2: Double(secondLag), inverted: at(best) < 0)
     }
 }
+
+/// The same search as `Correlator` against hours of reference, done in pieces: the reference is
+/// cut into overlapping blocks of one FFT size, whose spectra are made once and shared by every
+/// clip. A clip then needs memory for one block, not for the whole event, so every core can work,
+/// and the transforms are shorter. Each block is weighted (PHAT) on its own.
+public final class BlockCorrelator {
+    let reference: [Float]
+    let rate: Double
+    let settings: MatchSettings
+    private let lock = NSLock()
+    /// Block spectra by block size (one per clip-length class).
+    private var tables = [Int: [Spectrum]]()
+
+    public init(reference: [Float], rate: Double, settings: MatchSettings = MatchSettings()) {
+        self.reference = reference
+        self.rate = rate
+        self.settings = settings
+    }
+
+    /// The block size for a clip: at least four times as long, so three quarters of each block
+    /// are new lags; 2^20 and up in steps of four, so clips share few tables.
+    static func blockSize(for count: Int) -> Int {
+        var b = 1 << 20
+        while b < 4 * count { b *= 4 }
+        return b
+    }
+
+    /// The reference is read as if it had b/4 zeros in front (lags down to minus a clip's length);
+    /// block k starts there at k * 3b/4.
+    private func table(_ b: Int) -> [Spectrum] {
+        lock.lock(); defer { lock.unlock() }
+        if let t = tables[b] { return t }
+        let plan = FFTPlan.get(b)
+        let hop = 3 * b / 4, pad = b / 4
+        let count = (reference.count + pad + hop - 1) / hop
+        var out = [Spectrum?](repeating: nil, count: count)
+        let outLock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: count) { k in
+            var block = [Float](repeating: 0, count: b)
+            let from = k * hop - pad
+            for i in 0..<b {
+                let j = from + i
+                if j >= 0 && j < reference.count { block[i] = reference[j] }
+            }
+            let s = block.withUnsafeBufferPointer { spectrum(of: $0, plan: plan) }
+            outLock.lock(); out[k] = s; outLock.unlock()
+        }
+        let t = out.map { $0! }
+        tables[b] = t
+        return t
+    }
+
+    /// Bytes one search needs at once besides the shared tables (a block's spectra and correlation).
+    public static func bytesPerSearch(clipCount: Int) -> Double { Double(blockSize(for: clipCount)) * bytesPerFFTPoint }
+
+    /// Best alignment of `clip` with its start lag limited to `lags`, judged like `Correlator.match`.
+    public func match(_ clip: [Float], lags: ClosedRange<Int>) -> Match? {
+        let b = Self.blockSize(for: clip.count)
+        let plan = FFTPlan.get(b)
+        let half = b / 2, hop = 3 * b / 4, pad = b / 4
+        let blocks = table(b)
+        let lo = max(lags.lowerBound, -clip.count + 1), hi = min(lags.upperBound, reference.count - 1)
+        guard lo < hi else { return nil }
+        let c = clip.withUnsafeBufferPointer { spectrum(of: $0, plan: plan) }
+        let lowBin = max(1, Int(settings.lowHz * Double(b) / rate))
+        let highBin = min(half - 1, Int(settings.highHz * Double(b) / rate))
+
+        // The best peak with its neighbours and sign, the noise, and the largest value in each
+        // stretch of `bucket` lags (for the best competing peak, half a second or more away).
+        let bucket = 50
+        var bucketMax = [Float](repeating: 0, count: (hi - lo) / bucket + 1)
+        var bucketLag = [Int](repeating: 0, count: bucketMax.count)
+        var best = lo, bestValue: Float = -1, bestSigned: Float = 0
+        var y0: Float = 0, y2: Float = 0
+        // The last lag of the previous block, in case the peak is the first lag of the next.
+        var previous: (lag: Int, value: Float) = (Int.min, 0)
+        var sumSquares = 0.0, samples = 0
+        var x = Spectrum(re: [Float](repeating: 0, count: half), im: [Float](repeating: 0, count: half))
+        var mag = [Float](repeating: 0, count: half)
+        for (k, r) in blocks.enumerated() {
+            let first = k * hop - pad
+            let a = max(lo, first), z = min(hi, first + hop - 1)
+            guard a <= z else { continue }
+            for i in 0..<half {
+                let p = r.re[i], q = r.im[i], u = c.re[i], v = c.im[i]
+                let re = p * u + q * v, im = q * u - p * v
+                x.re[i] = re
+                x.im[i] = im
+                mag[i] = re * re + im * im
+            }
+            raise(&mag, to: settings.phatBeta / 2)
+            let eps = mean(mag) * 1e-3 + 1e-30
+            for i in 0..<half {
+                let w: Float = (i >= lowBin && i <= highBin) ? 1 / (mag[i] + eps) : 0
+                x.re[i] *= w
+                x.im[i] *= w
+            }
+            x.re[0] = 0
+            x.im[0] = 0
+            var work = x
+            let corr = realSignal(from: &work, plan: plan)
+            // Lag `first + d` is corr[d]; one more on each side for the peak's neighbours.
+            for lag in a...z {
+                let s = corr[lag - first], v = abs(s)
+                if v > bestValue {
+                    bestValue = v; bestSigned = s; best = lag
+                    y0 = lag - first > 0 ? abs(corr[lag - first - 1]) : (previous.lag == lag - 1 ? previous.value : 0)
+                    y2 = abs(corr[lag - first + 1])
+                }
+                if lag % 3 == 0 { sumSquares += Double(v * v); samples += 1 }
+                let j = (lag - lo) / bucket
+                if v > bucketMax[j] { bucketMax[j] = v; bucketLag[j] = lag }
+            }
+            previous = (z, abs(corr[z - first]))
+        }
+        let sigma = Float((sumSquares / Double(max(samples, 1))).squareRoot())
+        guard sigma > 0, bestValue > 0 else { return nil }
+        // Any stretch reaching past half a second from the peak counts (it can only make the
+        // competing peak higher: the safe side).
+        let exclusion = Int(0.5 * rate)
+        var second: Float = 0, secondLag = best
+        for j in bucketMax.indices {
+            let start = lo + j * bucket, end = start + bucket - 1
+            guard start < best - exclusion || end > best + exclusion else { continue }
+            if bucketMax[j] > second { second = bucketMax[j]; secondLag = bucketLag[j] }
+        }
+        var lag = Double(best)
+        if best > lo && best < hi {
+            let d = y0 - 2 * bestValue + y2
+            if d != 0 { lag += Double(0.5 * (y0 - y2) / d) }
+        }
+        return Match(lag: lag, z: bestValue / sigma, z2: second / sigma, lag2: Double(secondLag), inverted: bestSigned < 0)
+    }
+}

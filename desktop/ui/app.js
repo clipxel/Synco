@@ -8,7 +8,7 @@ const B = window.backend;
 // MARK: Settings (kept in this computer's app storage)
 
 const defaults = {
-  sync: { strictness: "normal", window: 20, band: "voice" },
+  sync: { strictness: "normal", window: 20, band: "voice", speed: "normal" },
   export: { syncedLabel: "Blue", approxLabel: "Yellow", unsyncedLabel: "Rose", disableUnsynced: false, sequenceSuffix: " - sincronizado", writeReport: true },
   sound: true, cacheDays: 60, recents: [],
 };
@@ -49,15 +49,7 @@ async function chooseFile() {
 async function open(path) {
   if (busy()) await B.send("cancel").catch(() => {});
   try {
-    const project = await B.send("open", { path });
-    Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null });
-    buildTracks();
-    prefs.recents = [path, ...prefs.recents.filter((p) => p !== path)].slice(0, 8);
-    savePrefs();
-    view.fit = true;
-    render();
-    const missing = project.clips.filter((c) => !c.exists);
-    if (missing.length) showPathFixer();
+    loaded(await B.send("open", { path }));
     await read();
   } catch (e) {
     S.phase = "failed";
@@ -65,6 +57,82 @@ async function open(path) {
     render();
   }
 }
+
+function loaded(project) {
+  const path = project.path;
+  Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null });
+  buildTracks();
+  prefs.recents = [path, ...prefs.recents.filter((p) => p !== path)].slice(0, 8);
+  savePrefs();
+  view.fit = true;
+  render();
+  if (project.clips.some((c) => !c.exists)) showPathFixer();
+}
+
+// MARK: Folders dropped on the timeline
+
+async function chooseFolders() {
+  const folders = await B.chooseFolders();
+  if (folders.length) drop(folders, null);
+}
+
+/** Folders and clips dropped on `track` go into it; with no track (below the tracks), each folder
+ *  becomes a new track. An editor's XML opens. */
+async function drop(paths, track) {
+  if (!paths.length || S.phase === "matching") return;
+  if (paths.length === 1 && /\.xml$/i.test(paths[0])) return open(paths[0]);
+  if (busy()) await B.send("cancel").catch(() => {});
+  S.phase = "reading"; S.readDone = 0; S.readTotal = 0;
+  message("Armando las pistas…");
+  render();
+  try {
+    const project = await B.send("drop", { paths: paths.filter((p) => !/\.xml$/i.test(p)), track: S.project?.built ? track?.deviceName : null });
+    loaded(project);
+    const ok = await read();
+    if (ok && project.skipped?.length) {
+      message(`${$("message").textContent} ${project.skipped.length} archivo(s) sin imagen ni sonido quedaron afuera: ${project.skipped.slice(0, 3).join(", ")}.`);
+    }
+  } catch (e) {
+    S.phase = S.project ? "ready" : "empty";
+    message(e.message, true);
+    render();
+  }
+}
+
+async function removeTrack(track) {
+  if (busy() || !S.project?.built) return;
+  const r = await B.send("removeTrack", { track: track.deviceName });
+  if (r.closed) {
+    Object.assign(S, { project: null, path: null, tracks: [], placements: {}, starts: null, phase: "empty" });
+    render();
+    return;
+  }
+  loaded(r);
+  await read();
+}
+
+/** The track under a point of the page while dragging files: null for the strip below the tracks
+ *  (or anywhere else), and always null when the project is an editor's (it takes no files). */
+function dropTarget(at) {
+  if (!at || !S.project?.built) return null;
+  const lanes = $("lanes").getBoundingClientRect(), heads = $("heads").getBoundingClientRect();
+  if (at.y < lanes.top || at.y > lanes.bottom || at.x < heads.left || at.x > lanes.right) return null;
+  return S.tracks[Math.floor((at.y - lanes.top) / view.rowH)] || null;
+}
+
+function dropHover(at) {
+  const track = at ? dropTarget(at) : null;
+  const inside = at && S.project && document.elementFromPoint(at.x, at.y)?.closest("#timeline, #newtrack");
+  view.dropRow = track ? S.tracks.indexOf(track) : null;
+  $("newtrack").classList.toggle("target", !!(inside && !track));
+  draw();
+}
+
+B.on("build", (e) => {
+  S.readDone = e.done; S.readTotal = e.total;
+  message(`Armando las pistas: ${e.done} de ${e.total} archivos…`);
+  renderStatus();
+});
 
 function buildTracks() {
   const order = [], byDevice = {};
@@ -77,7 +145,8 @@ function buildTracks() {
     const clips = byDevice[device].sort((a, b) => (a.recordedAt || "").localeCompare(b.recordedAt || "") || a.name.localeCompare(b.name));
     const video = clips.some((c) => c.hasVideo);
     const name = video ? `CÁMARA ${++cams}` : `GRABADOR ${++recs}`;
-    return { id: device, kind: video ? "camera" : "recorder", name, folder: `${clips[0].track} · ${clips[0].folder}`, clips };
+    return { id: device, kind: video ? "camera" : "recorder", name, folder: `${clips[0].track} · ${clips[0].deviceName || clips[0].folder}`,
+      deviceName: clips[0].deviceName, clips };
   });
   S.tracks = [...rows.filter((r) => r.kind === "camera"), ...rows.filter((r) => r.kind === "recorder")];
 }
@@ -97,7 +166,7 @@ async function read() {
   message("Leyendo el audio de los archivos…");
   render();
   try {
-    const r = await B.send("read");
+    const r = await B.send("read", { options: prefs.sync });
     S.durations = r.durations; S.problems = r.problems;
     S.peaks = {};
     for (const [id, b64] of Object.entries(r.peaks)) S.peaks[id] = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
@@ -157,8 +226,10 @@ function beep() {
 
 async function exportXML(chosen) {
   if (S.phase !== "done") return;
-  const base = S.path.replace(/\.xml$/i, "");
-  const path = chosen || (await B.saveXML(`${base} - sincronizado.xml`));
+  const name = S.path.split(/[\\/]/).pop().replace(/\.xml$/i, "");
+  const folder = S.project.exportFolder || S.path.replace(/[\\/][^\\/]*$/, "");
+  const sep = folder.includes("\\") ? "\\" : "/";
+  const path = chosen || (await B.saveXML(`${folder}${sep}${name} - sincronizado.xml`));
   if (!path) return;
   try {
     await B.send("export", { path, options: prefs.export });
@@ -185,7 +256,8 @@ function render() {
   const p = S.project;
   const has = !!p;
   $("empty").hidden = has;
-  $("timeline").hidden = $("zoombar").hidden = $("overview").hidden = !has;
+  $("timeline").hidden = $("zoombar").hidden = $("overview").hidden = $("newtrack").hidden = !has;
+  $("newtrack-text").textContent = p?.built ? "Soltá acá una carpeta o clips para crear otra pista" : "Soltá acá carpetas para empezar un proyecto nuevo con ellas";
   // Header
   if (has) {
     const badge = { reading: ["leyendo audio", "var(--accent)"], ready: ["sin sincronizar", "var(--muted)"], matching: ["sincronizando", "var(--accent)"],
@@ -213,6 +285,7 @@ function render() {
   syncBtn.disabled = !has;
   syncBtn.querySelector("span").textContent = busy() ? "Detener" : "Sincronizar";
   syncBtn.classList.toggle("primary", has && !busy() && S.phase !== "done");
+  for (const b of $("speed").querySelectorAll("button")) { b.classList.toggle("on", b.dataset.speed === prefs.sync.speed); b.disabled = busy(); }
   $("export").disabled = S.phase !== "done";
   $("export").classList.toggle("primary", S.phase === "done");
   $("report").hidden = S.phase !== "done";
@@ -252,7 +325,7 @@ function renderRecents() {
 
 // MARK: Timeline
 
-const view = { start: 0, pps: 0, fit: true, hover: null, rowH: 70 };
+const view = { start: 0, pps: 0, fit: true, hover: null, rowH: 70, dropRow: null };
 
 function startOf(c, track) {
   if (S.starts && S.starts[c.id] !== undefined) return S.starts[c.id] / S.project.fps;
@@ -278,6 +351,10 @@ function renderHeads() {
     d.className = "head"; d.style.height = view.rowH + "px";
     d.title = `${t.clips.length} clips en ${t.clips[0].folderPath}`;
     d.innerHTML = `<div>${t.kind === "camera" ? "🎥" : "🎙"}</div><b></b><span></span>`;
+    if (S.project.built) {
+      d.title += " · clic derecho: quitar esta pista";
+      d.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`¿Quitar la pista ${t.name} (${t.deviceName})? Los archivos no se tocan.`)) removeTrack(t); };
+    }
     d.querySelector("b").textContent = t.name;
     d.querySelector("span").textContent = t.folder;
     heads.append(d);
@@ -324,7 +401,7 @@ function draw() {
       }
       const hovered = view.hover && view.hover.id === c.id, selected = S.selected === c.id;
       if (hovered || selected) { ctx.strokeStyle = "#adf802"; ctx.lineWidth = selected ? 2 : 1; roundRect(ctx, x, y0 + 4, w, rowH - 9, 4); ctx.stroke(); }
-      if (w > 70) {
+      if (w > 70 && rowH > 0) {
         ctx.font = "500 11px " + getComputedStyle(document.body).fontFamily;
         const tw = ctx.measureText(c.name).width;
         if (tw + 8 < w) {
@@ -335,6 +412,13 @@ function draw() {
       }
     }
   });
+  // Where dropped files would go
+  if (view.dropRow !== null && view.dropRow !== undefined) {
+    ctx.strokeStyle = "#adf802"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+    ctx.fillStyle = "rgba(173, 248, 2, .08)";
+    roundRect(ctx, 1, view.dropRow * rowH + 1, W - 2, rowH - 2, 6); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+  }
   // Overview and scale
   const total = Math.max(totalDuration(), 1), visible = W / pps;
   const ov = $("overview").clientWidth;
@@ -507,7 +591,7 @@ function showSyncSettings() {
     band = select(s, "Frecuencias que compara", [["voice", "Voz y ambiente (100–1900 Hz)"], ["wide", "Amplia (60–1900 Hz), para música con graves"]], prefs.sync.band);
     win = select(s, "Búsqueda cerca de la hora del archivo", [["10", "±10 s (relojes bien puestos)"], ["20", "±20 s"], ["60", "±60 s (relojes desajustados)"]], prefs.sync.window);
     note(s, "El grabador con más audio se usa de referencia. Cada clip se busca primero en todo el audio, después cerca de donde lo pone la hora de su archivo y entre sus vecinos. Lo que no coincide con nada se ubica por fecha y hora y queda en rojo.");
-  }, () => { prefs.sync = { strictness: st.value, band: band.value, window: Number(win.value) }; savePrefs(); });
+  }, () => { prefs.sync = { ...prefs.sync, strictness: st.value, band: band.value, window: Number(win.value) }; savePrefs(); });
 }
 
 const labels = [["", "sin cambiar"], ["Blue", "azul"], ["Yellow", "amarillo"], ["Rose", "rosa (rojo)"], ["Violet", "violeta"], ["Iris", "lirio"], ["Caribbean", "caribe"],
@@ -680,6 +764,7 @@ $("open-empty").onclick = chooseFile;
 $("sync").onclick = () => (busy() ? stop() : synchronize());
 $("export").onclick = () => exportXML();
 $("sync-settings").onclick = showSyncSettings;
+for (const b of $("speed").querySelectorAll("button")) b.onclick = () => { prefs.sync.speed = b.dataset.speed; savePrefs(); render(); };
 $("export-settings").onclick = showExportSettings;
 $("settings").onclick = showGeneral;
 $("missing").onclick = showPathFixer;
@@ -689,7 +774,8 @@ $("donate").onclick = () => B.openURL(LINKS.donate);
 $("zoom-in").onclick = () => setZoom(view.pps * 2);
 $("zoom-out").onclick = () => setZoom(view.pps / 2);
 $("zoom-fit").onclick = () => { view.fit = true; draw(); };
-B.onDrop((paths) => { const xml = paths.find((p) => /\.xml$/i.test(p)); if (xml) open(xml); });
+B.onDrop((paths, at) => drop(paths, dropTarget(at)), dropHover);
+$("folders-empty").onclick = chooseFolders;
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("veil").hidden && !U.step) { closeVeil(); return; }
   if (!(e.ctrlKey || e.metaKey)) return;

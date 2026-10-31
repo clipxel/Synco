@@ -62,6 +62,11 @@ const backend = {
     if (inTauri) return T.dialog.save({ defaultPath, filters: [{ name: "XML", extensions: ["xml"] }] });
     return devDialog("save", { defaultPath });
   },
+  async chooseFolders() {
+    if (inTauri) { const r = await T.dialog.open({ directory: true, multiple: true }); return r ? [].concat(r) : []; }
+    const one = await devDialog("folder");
+    return one ? [one] : [];
+  },
   async chooseFolder() {
     if (inTauri) return T.dialog.open({ directory: true });
     return devDialog("folder");
@@ -77,13 +82,16 @@ const backend = {
   async pid() { return inTauri ? (await T.core.invoke("app_pid").catch(() => 0)) : 0; },
   quit() { if (inTauri) T.process.exit(0); },
 
-  /** Files dropped on the window (Tauri gives their paths). */
-  onDrop(fn) {
+  /** Files dropped on the window (Tauri gives their paths), with where in the page (CSS pixels);
+   *  `over` gets the position while dragging, and null when the drag leaves or ends. */
+  onDrop(fn, over = () => {}) {
     if (inTauri && T.webview) {
       T.webview.getCurrentWebview().onDragDropEvent((e) => {
-        if (e.payload.type === "drop") fn(e.payload.paths || []);
-        if (e.payload.type === "enter" || e.payload.type === "over") document.body.classList.add("dropping");
-        if (e.payload.type === "leave" || e.payload.type === "drop") document.body.classList.remove("dropping");
+        const p = e.payload.position, dpr = window.devicePixelRatio || 1;
+        const at = p ? { x: p.x / dpr, y: p.y / dpr } : null;
+        if (e.payload.type === "drop") fn(e.payload.paths || [], at);
+        if (e.payload.type === "enter" || e.payload.type === "over") { document.body.classList.add("dropping"); over(at); }
+        if (e.payload.type === "leave" || e.payload.type === "drop") { document.body.classList.remove("dropping"); over(null); }
       });
     }
   },

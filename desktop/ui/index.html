@@ -28,6 +28,9 @@
     <div class="counter zero" id="c-clips"><b>0</b><span>clips</span></div>
     <span class="chev">›</span>
     <button class="icon" id="sync-settings" title="Ajustes de sincronización"><svg class="i" viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></button>
+    <div class="segmented" id="speed" title="Rápido: busca en todo el evento unos pocos clips de cada cámara para conocer su reloj, y el resto cerca de la hora que marca. Normal: busca cada clip en todo el evento. Máximo: además vuelve a buscar los que faltan con otro rango de frecuencias (música con graves).">
+      <button data-speed="fast">Rápido</button><button data-speed="normal">Normal</button><button data-speed="thorough">Máximo</button>
+    </div>
     <button class="btn" id="sync" disabled title="Sincronizar (Ctrl+R)">
       <svg class="i" viewBox="0 0 24 24"><path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10"/></svg><span>Sincronizar</span></button>
     <span class="chev">›</span>
@@ -44,7 +47,7 @@
     <span class="light" id="l-read"><i></i>lectura</span>
     <span class="light" id="l-match"><i></i>búsqueda</span>
     <progress id="progress" hidden></progress>
-    <span class="msg" id="message">Abrí o soltá un XML exportado de Premiere, Resolve o Vegas.</span>
+    <span class="msg" id="message">Soltá en la línea de tiempo las carpetas de tus cámaras y grabadores, o un XML de tu editor.</span>
     <button class="link warn" id="missing" hidden></button>
     <button class="link" id="report" hidden>Ver informe</button>
   </section>
@@ -60,12 +63,13 @@
       <div class="heads" id="heads"></div>
       <div class="lanes" id="lanes"><canvas id="canvas"></canvas><div class="tip" id="tip" hidden></div></div>
     </div>
+    <div class="newtrack" id="newtrack" hidden><div class="plus">+</div><div class="slot" id="newtrack-text">Soltá acá una carpeta o clips para crear otra pista</div></div>
     <div class="overview" id="overview" hidden><i id="overview-thumb"></i></div>
     <div class="empty" id="empty">
       <svg class="i" viewBox="0 0 24 24" style="width:44px;height:44px;color:var(--muted)"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12M10 11v6M7 14h6"/></svg>
-      <h2>Soltá acá el XML de tu línea de tiempo</h2>
-      <p>En Premiere: Archivo › Exportar › Final Cut Pro XML. Una pista por cámara o grabador, con los clips sin ordenar.</p>
-      <button class="btn primary" id="open-empty">Elegir archivo…</button>
+      <h2>Soltá acá las carpetas de tus cámaras y grabadores</h2>
+      <p>Cada carpeta es una pista, con sus tomas en el orden en que se grabaron. Después podés soltar más carpetas o clips sobre una pista para sumarlos, o abajo de todo para crear otra. También podés soltar el XML de tu editor.</p>
+      <div class="buttons"><button class="btn primary" id="folders-empty">Elegir carpetas…</button><button class="btn" id="open-empty">Abrir un XML…</button></div>
       <div class="recents" id="recents"></div>
     </div>
   </main>

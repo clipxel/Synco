@@ -16,6 +16,9 @@ public final class ProjectClip {
     public internal(set) var device: String
     /// The editor track that defines the device ("V1", "A7").
     public let track: String
+    /// The device's name when Synco built the project from folders ("CAM A"): every file
+    /// in that folder and its subfolders is the same device.
+    public let deviceName: String?
     public var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
     /// Whether the editor says the file has a picture (a camera or phone, not a recorder).
     public let hasVideo: Bool
@@ -23,12 +26,14 @@ public final class ProjectClip {
     public let frames: Int
     let items: [XMLElement]
 
-    init(fileID: String, name: String, url: URL, frames: Int, hasVideo: Bool, track: String, items: [XMLElement]) {
+    init(fileID: String, name: String, url: URL, frames: Int, hasVideo: Bool, track: String, deviceName: String? = nil,
+         items: [XMLElement]) {
         self.fileID = fileID
         self.name = name
         self.url = url
         self.track = track
-        self.device = track + "|" + url.deletingLastPathComponent().path
+        self.deviceName = deviceName
+        self.device = track + "|" + (deviceName ?? url.deletingLastPathComponent().path)
         self.hasVideo = hasVideo
         self.frames = frames
         self.items = items
@@ -76,10 +81,11 @@ public final class FCP7Project {
         var order = [String]()
         var video = Set<String>()
         // Where each item sits: its track, video first, as (kind order, index).
-        var place = [ObjectIdentifier: (kind: Int, index: Int)]()
+        var place = [ObjectIdentifier: (kind: Int, index: Int, device: String?)]()
         for (k, kind) in ["video", "audio"].enumerated() {
             for (i, track) in tracks(kind).enumerated() {
-                for item in track.elements(forName: "clipitem") { place[ObjectIdentifier(item)] = (k, i + 1) }
+                let device = track.attribute(forName: "SyncoDevice")?.stringValue
+                for item in track.elements(forName: "clipitem") { place[ObjectIdentifier(item)] = (k, i + 1, device) }
             }
         }
         for item in clipItems() {
@@ -113,7 +119,7 @@ public final class FCP7Project {
             let home = items.compactMap { place[ObjectIdentifier($0)] }.min { ($0.kind, $0.index) < ($1.kind, $1.index) }
             let track = home.map { ($0.kind == 0 ? "V" : "A") + String($0.index) } ?? "?"
             clips.append(ProjectClip(fileID: id, name: name, url: url, frames: frames, hasVideo: video.contains(id),
-                                     track: track, items: items))
+                                     track: track, deviceName: home?.device, items: items))
         }
     }
 

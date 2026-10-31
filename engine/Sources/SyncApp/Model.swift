@@ -36,6 +36,19 @@ struct SyncPrefs: Codable, Equatable {
     /// Seconds searched either side of where a device clock puts a clip.
     var window: Double = 20
     var band = Band.voice
+    var speed = Speed.normal
+
+    init() {}
+
+    // Settings saved by older versions lack newer keys: those take their defaults.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = SyncPrefs()
+        strictness = try c.decodeIfPresent(Strictness.self, forKey: .strictness) ?? d.strictness
+        window = try c.decodeIfPresent(Double.self, forKey: .window) ?? d.window
+        band = try c.decodeIfPresent(Band.self, forKey: .band) ?? d.band
+        speed = try c.decodeIfPresent(Speed.self, forKey: .speed) ?? d.speed
+    }
 
     var options: SyncOptions {
         var o = SyncOptions()
@@ -45,6 +58,7 @@ struct SyncPrefs: Codable, Equatable {
         case .strict: o.zGlobal = 11; o.zNear = 8.5; o.ratioGlobal = 1.5; o.ratioNear = 1.3
         }
         o.window = window
+        o.speed = speed
         o.match.lowHz = band == .voice ? 100 : 60
         o.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
         return o
@@ -98,7 +112,7 @@ final class AppModel: ObservableObject {
     @Published var durations: [String: Double] = [:]
     @Published var readDone = 0
     @Published var readTotal = 0
-    @Published var message = "Abrí o soltá un XML exportado de Premiere, Resolve o Vegas."
+    @Published var message = "Soltá en la línea de tiempo las carpetas de tus cámaras y grabadores, o un XML de tu editor."
     @Published var ignored = Set<String>()
     @Published var selected: String?
     @Published var missing: [ProjectClip] = []
@@ -106,6 +120,8 @@ final class AppModel: ObservableObject {
     @Published var showSyncSettings = false
     @Published var showExportSettings = false
     @Published var showReport = false
+    /// Said once the audio is read, after "Listo para sincronizar."
+    private var notice: String?
     @Published var prefs: AppPrefs { didSet { savePrefs() } }
 
     private(set) var session: SyncSession?
@@ -204,6 +220,112 @@ final class AppModel: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url { open(url) }
     }
 
+    // MARK: Build from folders
+
+    /// Whether the open project is one Synco built from dropped folders (so it takes more of them).
+    var isBuilt: Bool {
+        guard let fileURL else { return false }
+        return fileURL.deletingLastPathComponent().standardizedFileURL.path == ProjectBuilder.projectsDir.standardizedFileURL.path
+    }
+
+    /// Asks for folders and adds each as a new track.
+    func chooseFolders() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Agregar"
+        panel.message = "Elegí las carpetas de tus cámaras y grabadores: cada una va en su propia pista."
+        if panel.runModal() == .OK { drop(panel.urls, onto: nil) }
+    }
+
+    /// What was dropped on the timeline: an editor's XML opens; folders and clips go onto `track`
+    /// (all of them into it), or, dropped below the tracks, each folder becomes a new track.
+    func drop(_ urls: [URL], onto track: TrackRow?) {
+        guard !urls.isEmpty, phase != .matching else { return }
+        if urls.count == 1, urls[0].pathExtension.lowercased() == "xml" { open(urls[0]); return }
+        let media = urls.filter { $0.pathExtension.lowercased() != "xml" }
+        // A project from an editor's XML is the editor's: folders start a new one.
+        let current = isBuilt ? project.flatMap(ProjectBuilder.sources(of:)) ?? [] : []
+        let sources: [ProjectBuilder.Source]
+        do {
+            sources = try ProjectBuilder.adding(media, to: current, track: isBuilt ? track?.clips.first?.deviceName : nil)
+        } catch {
+            message = "\(error)"
+            return
+        }
+        rebuild(sources)
+    }
+
+    /// Takes a track out of a project built from folders.
+    func removeTrack(_ track: TrackRow) {
+        guard isBuilt, !busy, let name = track.clips.first?.deviceName else { return }
+        let sources = (project.flatMap(ProjectBuilder.sources(of:)) ?? []).filter { $0.name != name }
+        if sources.isEmpty { close(); return } else { rebuild(sources) }
+    }
+
+    /// Back to the empty timeline.
+    func close() {
+        stop()
+        project = nil
+        session = nil
+        fileURL = nil
+        outcome = nil
+        tracks = []
+        placements = [:]
+        starts = nil
+        selected = nil
+        missing = []
+        phase = .empty
+        message = "Soltá en la línea de tiempo las carpetas de tus cámaras y grabadores, o un XML de tu editor."
+    }
+
+    /// Writes the project's XML again with these tracks (in Synco's own folder) and opens it.
+    private func rebuild(_ sources: [ProjectBuilder.Source]) {
+        let name = isBuilt ? (project?.sequenceName ?? "Proyecto")
+            : ProjectBuilder.commonFolder(sources.map(\.folder))?.lastPathComponent ?? sources[0].name
+        let url = isBuilt ? fileURL! : ProjectBuilder.newProjectURL(name: name)
+        stop()
+        phase = .reading
+        readDone = 0
+        readTotal = sources.reduce(0) { $0 + $1.files.count }
+        message = "Armando las pistas…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = Result {
+                try ProjectBuilder.build(sources, name: name, to: url) { done, total in
+                    Task { @MainActor in
+                        self?.readDone = done
+                        self?.message = "Armando las pistas: \(done) de \(total) archivos…"
+                    }
+                }
+            }
+            await MainActor.run {
+                guard let self else { return }
+                switch result {
+                case .success(let skipped):
+                    self.open(url)
+                    if !skipped.isEmpty {
+                        self.notice = "\(skipped.count) archivo(s) sin imagen ni sonido quedaron afuera: "
+                            + skipped.prefix(3).map(\.lastPathComponent).joined(separator: ", ") + (skipped.count > 3 ? "…" : ".")
+                    }
+                case .failure(let error):
+                    self.phase = .failed("\(error)")
+                    self.message = "No se pudieron armar las pistas: \(error)"
+                }
+            }
+        }
+    }
+
+    /// For a project built from folders, the shoot's folder; otherwise where its XML is.
+    private var exportFolder: URL? {
+        guard let fileURL else { return nil }
+        if isBuilt, let common = ProjectBuilder.commonFolder(Array(Set(project?.clips.map { $0.url.deletingLastPathComponent() } ?? []))) {
+            // Clips of one camera sit deep in its card ("CAM/private/M4ROOT/CLIP"): a level up from all of them.
+            return common
+        }
+        return fileURL.deletingLastPathComponent()
+    }
+
     func open(_ url: URL) {
         stop()
         do {
@@ -250,7 +372,7 @@ final class AppModel: ObservableObject {
             }
             let video = clips.contains { $0.hasVideo }
             // Its editor track and folder, so it is easy to tell which is which.
-            let folder = "\(clips[0].track) · \((clips[0].folder as NSString).lastPathComponent)"
+            let folder = "\(clips[0].track) · \(clips[0].deviceName ?? (clips[0].folder as NSString).lastPathComponent)"
             if video { cams += 1 } else { recs += 1 }
             rows.append(TrackRow(id: device, kind: video ? .camera : .recorder,
                                  name: video ? "CÁMARA \(cams)" : "GRABADOR \(recs)", folder: folder, clips: clips))
@@ -290,6 +412,7 @@ final class AppModel: ObservableObject {
                         ? "Listo para sincronizar."
                         : "Listo. \(failed) archivo(s) sin audio legible: se van a ubicar por su hora."
                     if images > 0 { self.message += " \(images) imagen(es) quedan como están: no tienen sonido." }
+                    if let notice = self.notice { self.message += " " + notice; self.notice = nil }
                     if let next { next() } else { self.searchAhead() }
                 }
             } catch {
@@ -436,7 +559,7 @@ final class AppModel: ObservableObject {
         if target == nil {
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.xml]
-            panel.directoryURL = fileURL.deletingLastPathComponent()
+            panel.directoryURL = exportFolder
             panel.nameFieldStringValue = fileURL.deletingPathExtension().lastPathComponent + " - sincronizado.xml"
             guard panel.runModal() == .OK else { return }
             target = panel.url

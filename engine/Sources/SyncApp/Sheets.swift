@@ -204,3 +204,4 @@ struct GeneralSettings: View {
         }
     }
 }
+

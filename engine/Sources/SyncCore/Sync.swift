@@ -73,10 +73,20 @@ public struct SyncOptions {
     public var clockAgree: Double = 1.5
     public var workers: Int = 6
     public var match = MatchSettings()
+    /// How much of the event each clip is searched in (see `Speed`).
+    public var speed = Speed.normal
     /// Checked between clips and stages; when it turns true the run stops early.
     public var isCancelled: () -> Bool = { false }
 
     public init() {}
+}
+
+/// Fast searches the whole event only for a few clips of each device, enough to learn its clock,
+/// and the rest only near where their clock puts them. Normal searches every clip everywhere.
+/// Thorough also searches what is still missing in a wider band (music with bass) and further
+/// from its clock.
+public enum Speed: String, Codable, CaseIterable {
+    case fast, normal, thorough
 }
 
 public final class Syncer {
@@ -117,7 +127,15 @@ public final class Syncer {
             if ProcessInfo.processInfo.environment["SYNCO_TIMING"] != nil { log(String(format: "tiempo %@: %.1f s", what, Date().timeIntervalSince(t))) }
             t = Date()
         }
-        matchGlobally(master)
+        if options.speed == .fast {
+            matchGlobally(master, only: calibrationSample())
+            calibrateClocks()
+            // A device whose clock can't be used has nothing to search near: its clips everywhere.
+            let blind = clips.filter { placements[$0.id] == nil && (deviceOffsets[$0.device] == nil || clockPosition($0) == nil) }
+            if !blind.isEmpty, !options.isCancelled() { matchGlobally(master, only: Set(blind.map(\.id))) }
+        } else {
+            matchGlobally(master)
+        }
         lap("global")
         if options.isCancelled() { return [] }
         calibrateClocks()
@@ -132,6 +150,20 @@ public final class Syncer {
         lap("cámaras")
         if !options.isCancelled() { matchGroups() }
         lap("grupos")
+        // Thorough: what is still missing, searched again everywhere in the other band (with the
+        // bass for music, or without it), and the near passes once more with whatever that adds.
+        if options.speed == .thorough, !options.isCancelled() {
+            var other = options.match
+            other.lowHz = other.lowHz < 80 ? 100 : 60
+            if matchGlobally(master, settings: other) > 0 {
+                calibrateClocks()
+                for _ in 0..<rounds where !options.isCancelled() { if matchNear(master) == 0 { break }; calibrateClocks() }
+                for _ in 0..<rounds where !options.isCancelled() { if matchBetween(master) == 0 { break }; calibrateClocks() }
+                for _ in 0..<rounds where !options.isCancelled() { if matchAgainstCameras() == 0 { break }; calibrateClocks() }
+                if !options.isCancelled() { matchGroups() }
+            }
+            lap("a fondo")
+        }
         if options.isCancelled() { return [] }
         placeByClock()
         return clips.compactMap { placements[$0.id] }
@@ -202,14 +234,33 @@ public final class Syncer {
 
     // MARK: Global search
 
-    func matchGlobally(_ master: [Float]) {
-        let todo = clips.filter { placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > Int(rate) }
-        guard !todo.isEmpty else { return }
+    /// A few clips of each device to search everywhere when going fast: the longest ones (the
+    /// surest matches) and some spread over the day (a clock can be reset halfway).
+    func calibrationSample() -> Set<String> {
+        var out = Set<String>()
+        for (device, list) in Dictionary(grouping: clips.filter { ($0.audio?.samples.count ?? 0) > Int(rate) }, by: \.device)
+        where device != referenceDevice {
+            for c in list.sorted(by: { $0.duration > $1.duration }).prefix(4) { out.insert(c.id) }
+            let byTime = list.sorted { ($0.recordedAt ?? .distantPast) < ($1.recordedAt ?? .distantPast) }
+            let step = max(1, byTime.count / 4)
+            for i in stride(from: 0, to: byTime.count, by: step) { out.insert(byTime[i].id) }
+        }
+        return out
+    }
+
+    /// Searches clips not placed yet across the whole reference (`only` some of them, `settings`
+    /// another band). Returns how many it placed.
+    @discardableResult
+    func matchGlobally(_ master: [Float], only: Set<String>? = nil, settings: MatchSettings? = nil) -> Int {
+        let todo = clips.filter {
+            placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > Int(rate) && (only?.contains($0.id) ?? true)
+        }
+        let settings = settings ?? options.match
+        guard !todo.isEmpty else { return 0 }
         let maxClip = todo.map { $0.audio!.samples.count }.max()!
-        let n = fftSize(atLeast: master.count + maxClip + 16)
-        // Results depend on the reference, the FFT length (padding) and the band: all in the key.
-        let m = options.match
-        let referenceKey = "\(contentKey(master))_\(n)_\(Int(rate))_\(m.lowHz)_\(m.highHz)_\(m.phatBeta)"
+        // Results depend on the reference, how it is searched (in blocks) and the band: all in the key.
+        let m = settings
+        let referenceKey = "\(contentKey(master))_blocks_\(Int(rate))_\(m.lowHz)_\(m.highHz)_\(m.phatBeta)"
         let lock = NSLock()
         var found = [String: Match?]()
         var search = [SyncClip]()
@@ -219,9 +270,10 @@ public final class Syncer {
         }
         if found.count > 0 { log("búsqueda global: \(found.count) clips ya buscados antes") }
         if !search.isEmpty {
-            let correlator = Correlator(reference: master, maxClip: maxClip, rate: rate, settings: options.match)
+            let correlator = BlockCorrelator(reference: master, rate: rate, settings: settings)
             var done = 0
-            let workers = min(options.workers, search.count, Self.workersThatFit(n))
+            let budget = Double(ProcessInfo.processInfo.physicalMemory) / 3
+            let workers = max(1, min(options.workers, search.count, Int(budget / BlockCorrelator.bytesPerSearch(clipCount: maxClip))))
             DispatchQueue.concurrentPerform(iterations: workers) { w in
                 for i in stride(from: w, to: search.count, by: workers) {
                     if options.isCancelled() { return }
@@ -239,17 +291,41 @@ public final class Syncer {
             }
             store?.save()
         }
+        var placed = 0
         for clip in todo {
             if let m = found[clip.id] ?? nil, m.z >= options.zGlobal, m.ratio >= options.ratioGlobal {
                 placements[clip.id] = Placement(id: clip.id, time: m.lag / rate, method: .audio, z: m.z, ratio: m.ratio)
+                placed += 1
             }
         }
+        return placed
+    }
+
+    /// Diagnostics: every clip searched against the whole reference at once and in blocks.
+    public func compareSearches() -> [(name: String, whole: Match?, blocks: Match?)] {
+        let master = buildReference()
+        let todo = clips.filter { placements[$0.id] == nil && ($0.audio?.samples.count ?? 0) > Int(rate) }
+        guard let maxClip = todo.map({ $0.audio!.samples.count }).max() else { return [] }
+        let whole = Correlator(reference: master, maxClip: maxClip, rate: rate, settings: options.match)
+        let blocks = BlockCorrelator(reference: master, rate: rate, settings: options.match)
+        var out = [(name: String, whole: Match?, blocks: Match?)](repeating: ("", nil, nil), count: todo.count)
+        let lock = NSLock()
+        DispatchQueue.concurrentPerform(iterations: min(3, todo.count)) { w in
+            for i in stride(from: w, to: todo.count, by: 3) {
+                let s = todo[i].audio!.samples
+                let overlap = min(s.count / 2, Int(4 * rate))
+                let lags = (-s.count + overlap)...(master.count - overlap)
+                let r = (todo[i].name, whole.match(s, lags: lags), blocks.match(s, lags: lags))
+                lock.lock(); out[i] = r; lock.unlock()
+            }
+        }
+        return out
     }
 
     /// The slow part alone, to have it stored before Sync is pressed.
     public func searchAhead() {
         let master = buildReference()
-        matchGlobally(master)
+        matchGlobally(master, only: options.speed == .fast ? calibrationSample() : nil)
     }
 
     /// How many clips can be correlated at once without swapping: each one needs about

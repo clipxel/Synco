@@ -1,8 +1,11 @@
 import AppKit
 import SwiftUI
+import SyncCore
 
 /// Command-line driving, for testing without clicking:
 ///   Synco --open a.xml [--sync] [--export b.xml] [--select N] [--snapshot shot.png] [--quit]
+///   Synco --folders cam1 cam2 audio [--drop-on N clip...] [--sync] ...   (like dropping them on the timeline:
+///   below the tracks, each folder a new track; on track N, into it)
 /// The snapshot is the app's own window drawn to a PNG (no screen recording involved).
 @MainActor
 enum Scripted {
@@ -28,6 +31,25 @@ enum Scripted {
                 await waitWhile { model.phase == .reading }
                 print(String(format: "synco: abierto y audio leído en %.1f s", Date().timeIntervalSince(t0)))
                 print("synco: fase \(model.phase) · faltantes \(model.missing.count) · \(model.message)")
+            }
+            var built: URL?
+            if let i = args.firstIndex(of: "--folders") {
+                let folders = args[(i + 1)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
+                model.drop(folders, onto: nil)
+                await waitWhile { model.phase == .reading }
+                if let j = args.firstIndex(of: "--drop-on"), j + 1 < args.count, let n = Int(args[j + 1]), n < model.tracks.count {
+                    let more = args[(j + 2)...].prefix { !$0.hasPrefix("--") }.map { URL(fileURLWithPath: $0) }
+                    print("synco: soltando \(more.count) en \(model.tracks[n].name)")
+                    model.drop(more, onto: model.tracks[n])
+                    await waitWhile { model.phase == .reading }
+                }
+                do {
+                    built = model.fileURL
+                    print(String(format: "synco: armado y audio leído en %.1f s", Date().timeIntervalSince(t0)))
+                    print("synco: fase \(model.phase) · \(model.cameras) cámaras · \(model.recorders) grabadores · \(model.clipCount) clips")
+                    for t in model.tracks { print("synco:   \(t.name) · \(t.folder) · \(t.clips.count) clips") }
+                    print("synco: \(model.message)")
+                }
             }
             if let n = value("--ignore").flatMap(Int.init), let clip = model.tracks.first?.clips.dropFirst(n).first {
                 model.toggleIgnored(clip.fileID)
@@ -70,6 +92,10 @@ enum Scripted {
                 snapshot(to: URL(fileURLWithPath: path))
             }
             model.prefs = saved
+            // A test run's project is not kept among the user's.
+            if let built, built.deletingLastPathComponent().standardizedFileURL.path == ProjectBuilder.projectsDir.standardizedFileURL.path {
+                try? FileManager.default.removeItem(at: built)
+            }
             if args.contains("--quit") {
                 // An open sheet (missing files, settings) would keep the app from quitting.
                 model.showPathFixer = false
@@ -87,8 +113,8 @@ enum Scripted {
     }
 
     static func snapshot(to url: URL) {
-        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
-              let view = window.contentView,
+        guard let main = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
+              let view = (main.attachedSheet ?? main).contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: url)

@@ -126,7 +126,73 @@ enum Selftest {
         let sameItems = reread.clips.count == project.clips.count
         print("\(sameItems ? "PASA " : "FALLA")  XML exportado con los \(project.clips.count) clips")
         ok = ok && sameItems
+        // The fast search (a few clips everywhere, the rest near their clock) lands them the same.
+        var fast = SyncOptions()
+        fast.speed = .fast
+        let quick = try session.sync(options: fast)
+        let same = quick.placements.allSatisfy { q in
+            guard let p = placements[q.id] else { return false }
+            return p.method.synced == q.method.synced && abs(p.time - q.time) * Double(fps) <= 1
+        }
+        print("\(same ? "PASA " : "FALLA")  modo rápido: el mismo resultado")
+        ok = ok && same
+        ok = try fromFolders(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth) }, recorder: recorderName) && ok
+        ok = mediaInfo() && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
+        return ok
+    }
+
+    /// The same files sorted into one folder per device, dropped as the shoot's folder: three
+    /// tracks, built and synced like the XML (every clip with common audio within a frame).
+    static func fromFolders(folder: URL, cache: AudioCache, items: [(name: String, track: String, truth: Double?)],
+                            recorder: String) throws -> Bool {
+        let fm = FileManager.default
+        let shoot = folder.appendingPathComponent("rodaje")
+        for item in items {
+            let dir = shoot.appendingPathComponent(item.track == "A3" ? "SONIDO" : "CAM \(item.track.dropFirst())")
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.copyItem(at: folder.appendingPathComponent(item.name), to: dir.appendingPathComponent(item.name))
+        }
+        let sources = ProjectBuilder.sources(from: [shoot])
+        let names = sources.map(\.name).sorted()
+        guard names == ["CAM 1", "CAM 2", "SONIDO"] else { print("FALLA  carpetas: pistas \(names)"); return false }
+        let xmlURL = folder.appendingPathComponent("carpetas.xml")
+        let skipped = try ProjectBuilder.build(sources, name: "carpetas", to: xmlURL)
+        let project = try FCP7Project(url: xmlURL)
+        guard skipped.isEmpty, project.clips.count == items.count, Set(project.clips.map(\.device)).count == 3 else {
+            print("FALLA  carpetas: \(project.clips.count) clips, \(skipped.count) afuera"); return false
+        }
+        let session = SyncSession(project: project, cache: cache, rate: 4000)
+        try session.readAudio()
+        let outcome = try session.sync()
+        let byName = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.name, $0.fileID) })
+        let placements = Dictionary(uniqueKeysWithValues: outcome.placements.map { ($0.id, $0) })
+        let zero = placements[byName[recorder]!]!.time
+        var ok = true
+        for item in items where item.name != recorder {
+            guard let p = placements[byName[item.name]!] else { ok = false; continue }
+            if let truth = item.truth {
+                ok = ok && p.method.synced && abs((p.time - zero) - truth) * Double(fps) <= 1
+            } else {
+                ok = ok && !p.method.synced
+            }
+        }
+        print("\(ok ? "PASA " : "FALLA")  proyecto armado desde carpetas: 3 pistas, \(project.clips.count) clips, sincronizado igual")
+        return ok
+    }
+
+    /// What ffmpeg says about a portrait phone clip, read as its size, rate and sound.
+    static func mediaInfo() -> Bool {
+        let text = """
+          Duration: 00:01:02.50, start: 0.000000, bitrate: 15000 kb/s
+          Stream #0:0[0x1](und): Video: hevc (Main) (hvc1 / 0x31637668), yuv420p(tv, bt709), 1920x1080, 14000 kb/s, 29.97 fps, 29.97 tbr, 600 tbn (default)
+              displaymatrix: rotation of -90.00 degrees
+          Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
+        """
+        let i = parseMediaInfoForTest(text)
+        let ok = abs(i.duration - 62.5) < 0.01 && i.hasVideo && i.width == 1080 && i.height == 1920
+            && abs(i.fps - 29.97) < 0.001 && i.channels == 2 && i.sampleRate == 48000
+        print("\(ok ? "PASA " : "FALLA")  datos de un video vertical de teléfono (ffmpeg)")
         return ok
     }
 

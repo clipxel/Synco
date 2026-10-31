@@ -5,7 +5,6 @@ import UniformTypeIdentifiers
 struct MainView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var updater: Updater
-    @State private var dropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,13 +12,7 @@ struct MainView: View {
             ActionBar()
             StatusBar()
             Divider().overlay(Theme.border)
-            ZStack {
-                if model.project == nil {
-                    EmptyState(targeted: dropTargeted)
-                } else {
-                    TimelineView()
-                }
-            }
+            TimelineView()
             if model.project != nil {
                 ClipInspector()
             }
@@ -27,13 +20,10 @@ struct MainView: View {
         .background(Theme.bg)
         .ignoresSafeArea(.container, edges: .top)
         .foregroundStyle(Theme.text)
-        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
-            guard let p = providers.first else { return false }
-            _ = p.loadObject(ofClass: URL.self) { url, _ in
-                if let url, url.pathExtension.lowercased() == "xml" {
-                    Task { @MainActor in model.open(url) }
-                }
-            }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            // Anywhere outside the tracks: an XML opens, folders become new tracks.
+            guard model.phase != .matching else { return false }
+            loadURLs(providers) { model.drop($0, onto: nil) }
             return true
         }
         .overlay {
@@ -44,6 +34,24 @@ struct MainView: View {
         .sheet(isPresented: $model.showExportSettings) { ExportSettingsSheet() }
         .sheet(isPresented: $model.showPathFixer) { PathFixerSheet() }
         .sheet(isPresented: $model.showReport) { ReportSheet() }
+    }
+}
+
+/// The file URLs of a drop, all of them, handed over on the main thread.
+func loadURLs(_ providers: [NSItemProvider], _ done: @escaping @MainActor ([URL]) -> Void) {
+    let group = DispatchGroup()
+    let lock = NSLock()
+    var urls = [(Int, URL)]()
+    for (i, p) in providers.enumerated() {
+        group.enter()
+        _ = p.loadObject(ofClass: URL.self) { url, _ in
+            if let url { lock.lock(); urls.append((i, url)); lock.unlock() }
+            group.leave()
+        }
+    }
+    group.notify(queue: .main) {
+        let sorted = urls.sorted { $0.0 < $1.0 }.map(\.1)
+        MainActor.assumeIsolated { done(sorted) }
     }
 }
 
@@ -156,6 +164,10 @@ struct ActionBar: View {
                     model.chooseFile()
                 }
                 .disabled(model.busy)
+                IconButton(systemImage: "folder.badge.plus", help: "Armar el proyecto desde las carpetas de tus cámaras y grabadores") {
+                    model.chooseFolders()
+                }
+                .disabled(model.busy)
             }
             Chevron()
             Counter(value: model.cameras, label: "cámaras")
@@ -164,6 +176,8 @@ struct ActionBar: View {
             Chevron()
             HStack(spacing: Theme.Size.space1) {
                 IconButton(systemImage: "gearshape", help: "Ajustes de sincronización") { model.showSyncSettings = true }
+                SpeedPicker()
+                    .disabled(model.busy)
                 if model.busy {
                     ActionButton(title: "Detener", systemImage: "stop.fill", primary: false) { model.stop() }
                 } else {
@@ -194,6 +208,27 @@ struct ActionBar: View {
         .padding(.horizontal, Theme.Size.space4)
         .padding(.vertical, Theme.Size.space3)
         .background(Theme.surface)
+    }
+}
+
+/// Rápido, Normal or Máximo, next to Sincronizar.
+struct SpeedPicker: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        Picker("Velocidad", selection: $model.prefs.sync.speed) {
+            Text("Rápido").tag(Speed.fast)
+            Text("Normal").tag(Speed.normal)
+            Text("Máximo").tag(Speed.thorough)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help("""
+        Rápido: busca en todo el evento unos pocos clips de cada cámara para conocer su reloj, y el resto cerca de la hora que marca. Mucho más rápido; si el reloj de una cámara no sirve, esa cámara se busca completa.
+        Normal: busca cada clip en todo el evento.
+        Máximo: además vuelve a buscar los que faltan con otro rango de frecuencias (música con graves).
+        """)
     }
 }
 
@@ -248,57 +283,6 @@ extension AppModel.Phase {
 }
 
 // MARK: Empty state
-
-struct EmptyState: View {
-    @EnvironmentObject var model: AppModel
-    let targeted: Bool
-
-    var body: some View {
-        VStack(spacing: Theme.Size.space4) {
-            Image(systemName: "rectangle.stack.badge.plus")
-                .font(.system(size: 44))
-                .foregroundStyle(targeted ? Theme.accent : Theme.textMuted)
-            Text("Soltá acá el XML de tu línea de tiempo")
-                .font(Theme.Font.lg)
-            Text("En Premiere: Archivo › Exportar › Final Cut Pro XML. Una pista por cámara o grabador, con los clips sin ordenar.")
-                .font(Theme.Font.base)
-                .foregroundStyle(Theme.textMuted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 460)
-            ActionButton(title: "Elegir archivo…", systemImage: "folder", primary: true) { model.chooseFile() }
-            let recents = model.prefs.recents.filter { FileManager.default.fileExists(atPath: $0) }
-            if !recents.isEmpty {
-                VStack(alignment: .leading, spacing: Theme.Size.space1) {
-                    Text("Recientes").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
-                    ForEach(recents, id: \.self) { path in
-                        Button {
-                            model.open(URL(fileURLWithPath: path))
-                        } label: {
-                            HStack {
-                                Image(systemName: "doc.text")
-                                Text((path as NSString).lastPathComponent)
-                                Text((path as NSString).deletingLastPathComponent)
-                                    .foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.head)
-                            }
-                            .font(Theme.Font.base)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .frame(maxWidth: 460, alignment: .leading)
-                .padding(.top, Theme.Size.space4)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.trackBg)
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.Size.radiusMd)
-                .stroke(Theme.accent, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-                .padding(Theme.Size.space4)
-                .opacity(targeted ? 1 : 0)
-        )
-    }
-}
 
 // MARK: Inspector (correction tool)
 

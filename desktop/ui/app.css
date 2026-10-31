@@ -110,6 +110,17 @@ progress { width: 160px; height: 6px; accent-color: var(--accent); }
 .recents button { display: flex; gap: 8px; width: 100%; background: none; border: 0; padding: 3px 0; cursor: pointer; text-align: left; }
 .recents button span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.dropping .empty { outline: 2px dashed var(--accent); outline-offset: -16px; }
+.empty .buttons { display: flex; gap: 8px; }
+.segmented { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; flex: none; }
+.segmented button { background: none; border: 0; color: var(--muted); padding: 0 10px; height: 28px; font: inherit; font-size: 12px; cursor: pointer; }
+.segmented button + button { border-left: 1px solid var(--border); }
+.segmented button.on { background: var(--surface-2); color: var(--text); }
+.segmented button:disabled { cursor: default; opacity: .5; }
+.newtrack { height: 64px; flex: none; display: flex; background: var(--track-bg); }
+.newtrack .plus { width: 96px; flex: none; display: flex; align-items: center; justify-content: center; background: var(--surface); color: var(--muted); font-size: 18px; }
+.newtrack .slot { flex: 1; margin: 8px; display: flex; align-items: center; justify-content: center; border: 1px dashed var(--border); border-radius: 6px; color: var(--muted); }
+.newtrack.target .slot { border: 2px dashed var(--accent); color: var(--accent); background: rgba(173, 248, 2, .08); }
+.newtrack.target .plus { color: var(--accent); }
 
 /* Sheets */
 .veil { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 20; }
