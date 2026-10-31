@@ -138,7 +138,7 @@ enum FFmpeg {
         lock.unlock()
         var info = Info()
         let text = (try? run(["-hide_banner", "-nostdin", "-i", url.path], stderrOnly: true)) ?? ""
-        for line in text.split(separator: "\n") {
+        for line in text.split(whereSeparator: \.isNewline) {
             if line.contains("Stream #"), line.contains("Audio:") {
                 info.audioStreams += 1
                 if let r = line.range(of: #"(\d+) Hz"#, options: .regularExpression) {
@@ -196,7 +196,7 @@ enum FFmpeg {
         let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
         p.waitUntilExit()
         guard p.terminationStatus == 0 else {
-            throw MediaError.readFailed(URL(fileURLWithPath: args.last ?? ""), message.split(separator: "\n").last.map(String.init) ?? "ffmpeg")
+            throw MediaError.readFailed(URL(fileURLWithPath: args.last ?? ""), message.split(whereSeparator: \.isNewline).last.map(String.init) ?? "ffmpeg")
         }
     }
 }

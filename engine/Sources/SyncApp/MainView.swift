@@ -69,7 +69,7 @@ struct HeaderBar: View {
                 Image(systemName: "chevron.right").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
                 Text(project.sequenceName).font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1)
                 Text(formatLength(model.totalDuration)).font(Theme.Font.base).foregroundStyle(Theme.textMuted)
-                Text("\(project.fps) cps").font(Theme.Font.base).foregroundStyle(Theme.textMuted)
+                Text("\(formatRate(project.fps)) cps").font(Theme.Font.base).foregroundStyle(Theme.textMuted)
                 PhaseBadge()
             } else {
                 Text("sincroniza cámaras y grabadores por el audio").font(Theme.Font.base).foregroundStyle(Theme.textMuted)
@@ -341,6 +341,12 @@ func methodText(_ p: Placement) -> String {
     case .clock: return p.note.contains("orden") ? "sin audio en común: entre sus vecinos, por fecha y hora" : "sin audio en común: por la hora del archivo"
     case .unplaced: return "sin ubicar: al final"
     }
+}
+
+/// "24", "23,976", "29,97".
+func formatRate(_ fps: Double) -> String {
+    fps == fps.rounded() ? String(Int(fps)) : String(format: "%.3f", fps).replacingOccurrences(of: #"0+$"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: ".", with: ",")
 }
 
 func formatLength(_ s: Double) -> String {

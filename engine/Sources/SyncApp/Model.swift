@@ -187,7 +187,7 @@ final class AppModel: ObservableObject {
         return outcome?.quality(p)
     }
     var remainingCount: Int { clipCount - syncedCount }
-    var fps: Double { Double(project?.fps ?? 25) }
+    var fps: Double { project?.fps ?? 25 }
     var report: String { outcome.flatMap { o in session?.report(o) } ?? "" }
 
     func duration(_ clip: ProjectClip) -> Double {

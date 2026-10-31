@@ -55,7 +55,11 @@ public enum ProjectError: Error, CustomStringConvertible {
 public final class FCP7Project {
     let document: XMLDocument
     let sequence: XMLElement
-    public let fps: Int
+    /// Frames per second of the sequence as it really runs: 23.976 and 29.97 for NTSC rates
+    /// (timebase 24 or 30 with <ntsc>TRUE</ntsc>). Every frame here is 1/fps seconds.
+    public let fps: Double
+    /// The sequence's whole-number timebase, as editors label it ("24", "30").
+    public let timebase: Int
     public let sequenceName: String
     public private(set) var clips: [ProjectClip] = []
     /// Stills on the timeline (photos, graphics): no sound, so they are left where they are.
@@ -73,8 +77,10 @@ public final class FCP7Project {
         }
         sequence = seq
         sequenceName = seq.elements(forName: "name").first?.stringValue ?? "Secuencia"
-        let timebase = seq.elements(forName: "rate").first?.elements(forName: "timebase").first?.stringValue
-        fps = Int(timebase ?? "") ?? 24
+        let rate = seq.elements(forName: "rate").first
+        timebase = Int(rate?.elements(forName: "timebase").first?.stringValue ?? "") ?? 24
+        let ntsc = rate?.elements(forName: "ntsc").first?.stringValue?.uppercased() == "TRUE"
+        fps = ntsc ? Double(timebase) * 1000 / 1001 : Double(timebase)
 
         var paths = [String: (name: String, url: URL)]()
         var itemsByFile = [String: [XMLElement]]()

@@ -56,7 +56,7 @@ func parseFFmpegInfo(_ text: String) -> MediaInfo {
     func first(_ pattern: String, in s: Substring) -> String? {
         s.range(of: pattern, options: .regularExpression).map { String(s[$0]) }
     }
-    for line in text.split(separator: "\n") {
+    for line in text.split(whereSeparator: \.isNewline) {
         if line.contains("Duration:"), let d = first(#"\d+:\d{2}:\d{2}(\.\d+)?"#, in: line) {
             let p = d.split(separator: ":").compactMap { Double($0) }
             if p.count == 3 { info.duration = p[0] * 3600 + p[1] * 60 + p[2] }

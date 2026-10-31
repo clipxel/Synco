@@ -136,9 +136,52 @@ enum Selftest {
         }
         print("\(same ? "PASA " : "FALLA")  modo rápido: el mismo resultado")
         ok = ok && same
+        ok = try ntscSequence(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth, $0.frames) },
+                              recorder: recorderName) && ok
         ok = try fromFolders(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth) }, recorder: recorderName) && ok
         ok = mediaInfo() && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
+        return ok
+    }
+
+    /// The same project in a 29.97 sequence (timebase 30, NTSC): a frame there is 1001/30000 s, and
+    /// the exported XML, read with that rate, must put every clip within a frame of the truth.
+    /// (Counting 30 frames a second would put a clip 6 minutes in about a third of a second off.)
+    static func ntscSequence(folder: URL, cache: AudioCache, items: [(name: String, track: String, truth: Double?, frames: Int)],
+                             recorder: String) throws -> Bool {
+        let rate = 30000.0 / 1001
+        let converted = items.map { ($0.name, $0.track, Int((Double($0.frames) / Double(fps) * rate).rounded())) }
+        let text = xml(converted, folder: folder).replacingOccurrences(of: "<timebase>\(fps)</timebase>",
+                                                                       with: "<timebase>30</timebase><ntsc>TRUE</ntsc>")
+        let xmlURL = folder.appendingPathComponent("ntsc.xml")
+        try text.write(to: xmlURL, atomically: true, encoding: .utf8)
+        let project = try FCP7Project(url: xmlURL)
+        let session = SyncSession(project: project, cache: cache, rate: 4000)
+        try session.readAudio()
+        let outcome = try session.sync()
+        let out = folder.appendingPathComponent("ntsc - sincronizado.xml")
+        try session.export(outcome, to: out)
+        // The exported frames, turned into seconds by hand at 29.97.
+        let doc = try String(contentsOf: out, encoding: .utf8)
+        var start = [String: Double]()
+        for part in doc.components(separatedBy: "<clipitem").dropFirst() {
+            func value(_ tag: String) -> Int? {
+                guard let a = part.range(of: "<\(tag)>"), let b = part.range(of: "</\(tag)>", range: a.upperBound..<part.endIndex) else { return nil }
+                return Int(part[a.upperBound..<b.lowerBound])
+            }
+            guard let a = part.range(of: "<name>"), let b = part.range(of: "</name>"), let s = value("start") else { continue }
+            let name = String(part[a.upperBound..<b.lowerBound])
+            if start[name] == nil { start[name] = Double(s - (value("in") ?? 0)) / rate }
+        }
+        guard let zero = start[recorder] else { print("FALLA  secuencia 29,97: falta el grabador"); return false }
+        var ok = true, worst = 0.0
+        for item in items where item.name != recorder {
+            guard let truth = item.truth, let s = start[item.name] else { continue }
+            let error = abs((s - zero) - truth)
+            worst = max(worst, error)
+            ok = ok && error * rate <= 1.01
+        }
+        print(String(format: "%@  secuencia 29,97 (NTSC): todos a un cuadro o menos en el XML (peor %.0f ms)", ok ? "PASA " : "FALLA", worst * 1000))
         return ok
     }
 
@@ -189,10 +232,11 @@ enum Selftest {
               displaymatrix: rotation of -90.00 degrees
           Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 192 kb/s (default)
         """
-        let i = parseMediaInfoForTest(text)
+        // Windows' ffmpeg ends lines with CR LF, which Swift reads as one character.
+        let i = parseMediaInfoForTest(text.replacingOccurrences(of: "\n", with: "\r\n"))
         let ok = abs(i.duration - 62.5) < 0.01 && i.hasVideo && i.width == 1080 && i.height == 1920
             && abs(i.fps - 29.97) < 0.001 && i.channels == 2 && i.sampleRate == 48000
-        print("\(ok ? "PASA " : "FALLA")  datos de un video vertical de teléfono (ffmpeg)")
+        print("\(ok ? "PASA " : "FALLA")  datos de un video vertical de teléfono (ffmpeg, líneas de Windows)")
         return ok
     }
 

@@ -98,6 +98,44 @@ case "compare":
                      w?.z ?? 0, b?.z ?? 0, w?.ratio ?? 0, b?.ratio ?? 0))
     }
 
+case "drift":
+    // A synced XML: each long clip's first and last two minutes, found again in the recorder's
+    // audio as the XML lays it out. If the end is off by more than the start, that camera's clock
+    // runs at another speed than the recorder's.
+    let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))
+    let session = SyncSession(project: project, cache: cache, rate: rate)
+    try session.readAudio()
+    let starts = project.mediaStarts()
+    let recorder = Dictionary(grouping: project.clips.filter { !$0.hasVideo }, by: \.device)
+        .max { a, b in a.value.reduce(0) { $0 + (session.audio[$1.fileID]?.duration ?? 0) } < b.value.reduce(0) { $0 + (session.audio[$1.fileID]?.duration ?? 0) } }?.value ?? []
+    let end = recorder.compactMap { c in starts[c.fileID].map { $0 + (session.audio[c.fileID]?.duration ?? 0) } }.max() ?? 0
+    var line = [Float](repeating: 0, count: Int(end * rate) + 1)
+    for c in recorder {
+        guard let s = starts[c.fileID], let a = session.audio[c.fileID] else { continue }
+        let o = Int((s * rate).rounded())
+        for i in a.samples.indices where o + i >= 0 && o + i < line.count { line[o + i] = a.samples[i] }
+    }
+    let piece = 120.0, margin = 2.0
+    func error(_ samples: ArraySlice<Float>, at t: Double) -> (Double, Float)? {
+        let from = Int(((t - margin) * rate).rounded())
+        let len = samples.count + Int(2 * margin * rate)
+        guard from >= 0, from + len <= line.count else { return nil }
+        let ref = Array(line[from..<(from + len)])
+        let c = Correlator(reference: ref, maxClip: samples.count, rate: rate)
+        guard let m = c.match(Array(samples), lags: 0...Int(2 * margin * rate)), m.z >= 7 else { return nil }
+        return (m.lag / rate - margin, m.z)
+    }
+    print("clip\tminutos\terror al principio (ms)\terror al final (ms)\tderiva (ppm)")
+    for c in project.clips where c.hasVideo {
+        guard let s = starts[c.fileID], let a = session.audio[c.fileID], a.duration >= 600 else { continue }
+        let n = Int(piece * rate)
+        guard let e0 = error(a.samples[0..<n], at: s), let e1 = error(a.samples[(a.samples.count - n)...], at: s + a.duration - piece) else {
+            print("\(c.name)\t\(Int(a.duration / 60))\tsin audio en común claro en un extremo"); continue
+        }
+        let ppm = (e1.0 - e0.0) / (a.duration - piece) * 1e6
+        print(String(format: "%@\t%.0f\t%+.0f\t%+.0f\t%+.0f", c.name, a.duration / 60, e0.0 * 1000, e1.0 * 1000, ppm))
+    }
+
 case "times":
     let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))
     let f = DateFormatter()
@@ -127,11 +165,11 @@ case "check":
         return Placement(id: c.fileID, time: t, method: .audio)
     }
     let checks = Syncer(clips: clips, rate: rate) { _ in }.crosscheck(placed)
-    let fps = 25.0
+    let fps = project.fps
     let judged = checks.compactMap(\.error)
     let names = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.fileID, $0.name) })
     print("pares superpuestos: \(checks.count), con audio en común claro: \(judged.count)")
-    for (label, lo, hi) in [("≤1 cuadro (40 ms)", 0.0, 1.0), ("1–2 cuadros", 1.0, 2.0), ("> 2 cuadros", 2.0, 1e9)] {
+    for (label, lo, hi) in [(String(format: "≤1 cuadro (%.0f ms)", 1000 / fps), 0.0, 1.0), ("1–2 cuadros", 1.0, 2.0), ("> 2 cuadros", 2.0, 1e9)] {
         print("  \(label): \(judged.filter { abs($0) * fps > lo && abs($0) * fps <= hi || (lo == 0 && $0 == 0) }.count)")
     }
     let sorted = judged.map(abs).sorted()
