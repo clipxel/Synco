@@ -111,6 +111,11 @@ public final class Syncer {
     var droppedByClock = Set<String>()
     /// Global search results from before (this project opened earlier, or searched on opening).
     public var store: MatchStore?
+    /// What each later pass already searched with nothing new to search against since: the
+    /// passes repeat while they find clips, and a clip that came up empty is not searched again
+    /// until something new is placed where it can be.
+    var searchedBetween = [String: String]()
+    var searchedAgainstCameras = [String: Int]()
 
     public init(clips: [SyncClip], rate: Double, options: SyncOptions = SyncOptions(), log: @escaping (String) -> Void) {
         self.clips = clips
@@ -196,9 +201,18 @@ public final class Syncer {
         var master = [Float]()
         var previousEnd: Date?
         var previousClosed: Date?
+        // A recorder that splits a long take writes every part to the same size: a file as long as
+        // the longest one (ten minutes or more) was cut by the recorder, and the next one goes on
+        // with no pause, whatever the file dates say (they can be a copy's, or whole seconds).
+        let longest = refs.map(\.duration).max() ?? 0
+        var previousWasFull = false
         for r in refs {
             if let end = previousEnd, let start = r.recordedAt {
-                let continues = previousClosed.map { abs(start.timeIntervalSince($0)) < 2 } ?? false
+                let continues = previousWasFull || (previousClosed.map { abs(start.timeIntervalSince($0)) < 2 } ?? false)
+                if previousWasFull, start.timeIntervalSince(end) > 2 {
+                    log(String(format: "%@ sigue sin pausa al archivo anterior (el grabador lo cortó por tamaño; su fecha decía %.0f s de pausa)",
+                               r.name, start.timeIntervalSince(end)))
+                }
                 let gap = start.timeIntervalSince(end)
                 // A real pause, up to a long break between sets. Days of "gap" mean a file date
                 // that is wrong (a copy), and filling them with silence would take all the memory.
@@ -212,6 +226,7 @@ public final class Syncer {
             placements[r.id] = Placement(id: r.id, time: Double(master.count) / rate, method: .reference)
             master.append(contentsOf: r.audio!.samples)
             previousEnd = r.recordedAt.map { $0.addingTimeInterval(r.duration) }
+            previousWasFull = r.duration >= 600 && r.duration >= longest - max(1, longest * 0.002)
         }
         return master
     }
@@ -402,7 +417,9 @@ public final class Syncer {
     // MARK: Search near the clock
 
     /// The reference plus every synced clip from other devices, for one stretch of time.
-    func composite(from start: Double, length: Int, excluding device: String, master: [Float]) -> [Float] {
+    func composite(from start: Double, length: Int, excluding device: String, master: [Float],
+                   placed: [String: Placement]? = nil) -> [Float] {
+        let placements = placed ?? self.placements
         var out = [Float](repeating: 0, count: length)
         var filled = [Bool](repeating: false, count: length)
         let s0 = Int((start * rate).rounded())
@@ -435,21 +452,20 @@ public final class Syncer {
         }
         let lock = NSLock()
         var found = 0
+        let placed = placements
         let workers = max(1, min(options.workers, todo.count))
         DispatchQueue.concurrentPerform(iterations: workers) { w in
             for i in stride(from: w, to: todo.count, by: workers) {
+                if options.isCancelled() { return }
                 let clip = todo[i]
                 let samples = clip.audio!.samples
-                lock.lock()
                 let predicted = clockPosition(clip)! + deviceOffsets[clip.device]!
                 let start = predicted - options.window
                 let length = samples.count + Int(2 * options.window * rate)
-                let reference = composite(from: start, length: length, excluding: clip.device, master: master)
-                lock.unlock()
+                let reference = composite(from: start, length: length, excluding: clip.device, master: master, placed: placed)
                 guard reference.contains(where: { $0 != 0 }) else { continue }
                 let correlator = Correlator(reference: reference, maxClip: samples.count, rate: rate, settings: options.match)
                 let m = correlator.match(samples, lags: 0...Int(2 * options.window * rate))
-                lock.lock()
                 // A rival peak far from the clock can't beat one right where the clock says.
                 let clockAgrees = m.map {
                     $0.z >= options.zGlobal
@@ -462,12 +478,16 @@ public final class Syncer {
                     abs(start + $0.lag / rate - predicted) > options.clockTolerance
                         && !($0.z >= options.zGlobal && $0.ratio >= 1.5 * options.ratioGlobal)
                 } ?? true
-                if let m, m.z >= options.zNear, m.ratio >= options.ratioNear || clockAgrees, !farFromClock {
+                let accepted = m.map { $0.z >= options.zNear && ($0.ratio >= options.ratioNear || clockAgrees) && !farFromClock } ?? false
+                // The second chance (each placed clip alone) is worked out before taking the lock.
+                let pairwise = accepted ? nil : matchPairwise(clip, predicted: predicted, placed: placed)
+                lock.lock()
+                if accepted, let m {
                     let time = start + m.lag / rate
                     placements[clip.id] = Placement(id: clip.id, time: time, method: .audioNear, z: m.z, ratio: m.ratio,
                                                     clockError: time - predicted)
                     found += 1
-                } else if let p = matchPairwise(clip, predicted: predicted) {
+                } else if let p = pairwise {
                     placements[clip.id] = p
                     found += 1
                     log(String(format: "%@: por audio contra %@ (z %.1f)", clip.name, p.note, p.z))
@@ -486,15 +506,15 @@ public final class Syncer {
     /// composite search can miss it even though another camera heard the same thing
     /// clearly. Tries each already synced clip from another device that overlaps the
     /// clock's window, one by one, with the same thresholds, and keeps only a match that
-    /// lands where the clock says. Called with the lock held.
-    func matchPairwise(_ clip: SyncClip, predicted: Double) -> Placement? {
+    /// lands where the clock says. Reads `placed`, the placements when the pass began.
+    func matchPairwise(_ clip: SyncClip, predicted: Double, placed: [String: Placement]) -> Placement? {
         let samples = clip.audio!.samples
         let lo = predicted - options.window, hi = predicted + options.window
         var best: Placement?
         // The reference was already in the composite; asking it again alone would only
         // turn an ambiguous answer into a weak yes.
         for other in clips where other.device != clip.device && other.device != referenceDevice {
-            guard let p = placements[other.id], p.method.synced, let audio = other.audio else { continue }
+            guard let p = placed[other.id], p.method.synced, let audio = other.audio else { continue }
             // Only clips that can overlap the clip somewhere in the window.
             guard p.time < hi + clip.duration, p.time + other.duration > lo else { continue }
             let from = Int(((lo - p.time) * rate).rounded()), to = Int(((hi - p.time) * rate).rounded())
@@ -550,12 +570,22 @@ public final class Syncer {
                 let to = after.map { placements[$0.id]!.time - clip.duration + slack }
                     ?? (from + slack + 600)
                 guard to > from, to - from <= longest else { continue }
+                // The same stretch with the same clips placed around it: the same answer as before.
+                let around = clips.filter { o in
+                    o.device != clip.device && placements[o.id]?.method.synced == true
+                        && placements[o.id]!.time < to + clip.duration && placements[o.id]!.time + o.duration > from
+                }.count
+                let signature = String(format: "%.1f|%.1f|%d", from, to, around)
+                guard searchedBetween[clip.id] != signature else { continue }
+                searchedBetween[clip.id] = signature
                 jobs.append((clip, from, to))
             }
         }
         guard !jobs.isEmpty else { return 0 }
         let lock = NSLock()
         var found = 0
+        // Each search reads what was placed before this pass (the next pass sees this one's finds).
+        let placed = placements
         let biggest = jobs.map { Int(($0.to - $0.from) * rate) + $0.clip.audio!.samples.count }.max()!
         let workers = max(1, min(options.workers, jobs.count, Self.workersThatFit(fftSize(atLeast: biggest * 2))))
         DispatchQueue.concurrentPerform(iterations: workers) { w in
@@ -564,9 +594,7 @@ public final class Syncer {
                 let (clip, from, to) = jobs[i]
                 let samples = clip.audio!.samples
                 let span = Int(((to - from) * rate).rounded())
-                lock.lock()
-                let reference = composite(from: from, length: span + samples.count, excluding: clip.device, master: master)
-                lock.unlock()
+                let reference = composite(from: from, length: span + samples.count, excluding: clip.device, master: master, placed: placed)
                 guard reference.contains(where: { $0 != 0 }) else { continue }
                 let correlator = Correlator(reference: reference, maxClip: samples.count, rate: rate, settings: options.match)
                 guard let m = correlator.match(samples, lags: 0...span) else { continue }
@@ -619,10 +647,14 @@ public final class Syncer {
                 buffer.append(contentsOf: repeatElement(0, count: Int(rate)))
             }
             guard !segments.isEmpty else { continue }
+            // Nothing new placed on the other cameras since this device was searched: same answers.
+            guard searchedAgainstCameras[device] != segments.count else { continue }
+            searchedAgainstCameras[device] = segments.count
             let maxClip = todo.map { $0.audio!.samples.count }.max()!
-            let correlator = Correlator(reference: buffer, maxClip: maxClip, rate: rate, settings: options.match)
+            let correlator = BlockCorrelator(reference: buffer, rate: rate, settings: options.match)
             let lock = NSLock()
-            let workers = max(1, min(options.workers, todo.count, Self.workersThatFit(fftSize(atLeast: buffer.count + maxClip + 16))))
+            let budget = Double(ProcessInfo.processInfo.physicalMemory) / 3
+            let workers = max(1, min(options.workers, todo.count, Int(budget / BlockCorrelator.bytesPerSearch(clipCount: maxClip))))
             DispatchQueue.concurrentPerform(iterations: workers) { w in
                 for i in stride(from: w, to: todo.count, by: workers) {
                     if options.isCancelled() { return }

@@ -362,7 +362,14 @@ func rawRecordingStart(url: URL) -> Date? {
     switch url.pathExtension.lowercased() {
     // Which day a recorder's time of day belongs to: the modification date (when the file was
     // closed) survives copies; the creation date becomes the day of the copy on Windows.
-    case "wav", "bwf": date = broadcastStart(url: url, near: values?.contentModificationDate ?? fileDate)
+    case "wav", "bwf":
+        date = broadcastStart(url: url, near: values?.contentModificationDate ?? fileDate)
+        // No clock inside and no time in the name: the file was closed when the recording
+        // stopped, and that date survives copies (the creation date doesn't, on Windows).
+        if date == nil, nameTimestamp(url.lastPathComponent) == nil, let closed = values?.contentModificationDate,
+           let length = wavDuration(url: url) {
+            date = closed.addingTimeInterval(-length)
+        }
     case "mov", "mp4", "m4v", "mxf", "mts", "m4a":
         // Inside the file it is often whole seconds only; the file date has fractions.
         // Keep the file date when both agree, the metadata when the file date was lost in a copy.
@@ -394,6 +401,35 @@ public func nameTimestamp(_ name: String) -> Date? {
 
 private let startLock = NSLock()
 private var startCache = [String: Date?]()
+
+/// A WAV's length in seconds from its header (data size over bytes per second).
+func wavDuration(url: URL) -> Double? {
+    guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    defer { try? handle.close() }
+    guard let header = try? handle.read(upToCount: 12), header.count == 12,
+          let riff = String(data: header.prefix(4), encoding: .ascii), riff == "RIFF" || riff == "RF64" else { return nil }
+    var byteRate: Double?
+    var dataSize: UInt64?
+    var big: UInt64?          // RF64: the real data size, in the ds64 chunk
+    var offset: UInt64 = 12
+    for _ in 0..<64 {
+        try? handle.seek(toOffset: offset)
+        guard let chunk = try? handle.read(upToCount: 8), chunk.count == 8 else { break }
+        let id = String(data: chunk.prefix(4), encoding: .ascii) ?? ""
+        let size = UInt64(chunk.suffix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+        if id == "fmt ", let body = try? handle.read(upToCount: 12), body.count == 12 {
+            byteRate = Double(body[8..<12].withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
+        } else if id == "ds64", let body = try? handle.read(upToCount: 16), body.count == 16 {
+            big = body[8..<16].withUnsafeBytes { $0.loadUnaligned(as: UInt64.self) }
+        } else if id == "data" {
+            dataSize = size == 0xFFFF_FFFF ? big : size
+            break
+        }
+        offset += 8 + size + (size & 1)
+    }
+    guard let byteRate, byteRate > 0, let dataSize else { return nil }
+    return Double(dataSize) / byteRate
+}
 
 /// The start of a broadcast WAV from its `bext` time reference and `fmt` sample rate.
 func broadcastStart(url: URL, near fileDate: Date?) -> Date? {

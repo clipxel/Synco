@@ -70,6 +70,9 @@ case "sync" where args.count >= 4:
     })
     var options = SyncOptions()
     if let v = ProcessInfo.processInfo.environment["SYNCO_SPEED"].flatMap(Speed.init(rawValue:)) { options.speed = v }
+    // For timing the later passes: a stricter global search leaves them more clips.
+    if let z = ProcessInfo.processInfo.environment["SYNCO_ZGLOBAL"].flatMap(Float.init) { options.zGlobal = z }
+    options.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
     let outcome = try session.sync(options: options) { print($0) }
     var export = ExportOptions()
     export.sequenceSuffix = ""

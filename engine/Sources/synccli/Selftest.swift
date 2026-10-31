@@ -141,6 +141,7 @@ enum Selftest {
         ok = try fromFolders(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth) }, recorder: recorderName) && ok
         ok = mediaInfo() && ok
         ok = midnight() && ok
+        ok = splitRecorder() && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
         return ok
     }
@@ -222,6 +223,44 @@ enum Selftest {
             }
         }
         print("\(ok ? "PASA " : "FALLA")  proyecto armado desde carpetas: 3 pistas, \(project.clips.count) clips, sincronizado igual")
+        return ok
+    }
+
+    /// A console recorder that cuts its take into files of the same length, one right after the
+    /// other, with file dates that wrongly say there were 15 and 25 s between them; a camera
+    /// clip straddles the first cut. The files must follow each other with no gap and the camera
+    /// clip must land where it was recorded.
+    static func splitRecorder() -> Bool {
+        let rate = 4000.0
+        var rng = Rng(state: 7)
+        let total = 1500 * Int(rate)
+        var take = [Float](repeating: 0, count: total)
+        var low: Float = 0
+        for i in take.indices {
+            low += 0.2 * (Float(rng.next() * 2 - 1) - low)
+            take[i] = low * (0.3 + 0.7 * Float(abs(sin(Double(i) / rate * 1.3))))
+        }
+        let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+        let part = 600 * Int(rate)
+        let starts = [0.0, 615.0, 1225.0]          // what the dates say (true: 0, 600, 1200)
+        var clips = (0..<3).map { k -> SyncClip in
+            let a = k * part, b = min(total, a + part)
+            return SyncClip(id: "rec\(k)", name: "TASCAM_000\(k + 1).wav", device: "consola",
+                            audio: AudioTrack(samples: Array(take[a..<b]), rate: rate),
+                            recordedAt: t0.addingTimeInterval(starts[k]), duration: Double(b - a) / rate)
+        }
+        // The camera: from 570 to 650 s of the take, with its own noise; its clock is right.
+        var cam = Array(take[(570 * Int(rate))..<(650 * Int(rate))])
+        for i in cam.indices { cam[i] = 0.8 * cam[i] + Float(0.05 * (rng.next() * 2 - 1)) }
+        clips.append(SyncClip(id: "cam", name: "C0001.MP4", device: "cámara", audio: AudioTrack(samples: cam, rate: rate),
+                              recordedAt: t0.addingTimeInterval(570), duration: 80))
+        let syncer = Syncer(clips: clips, rate: rate) { _ in }
+        syncer.soundOnly = ["consola"]
+        let placed = Dictionary(uniqueKeysWithValues: syncer.run().map { ($0.id, $0.time) })
+        let zero = placed["rec0"] ?? 0
+        let ok = abs((placed["rec1"] ?? 0) - zero - 600) < 0.01 && abs((placed["rec2"] ?? 0) - zero - 1200) < 0.01
+            && abs((placed["cam"] ?? 0) - zero - 570) * Double(fps) <= 1
+        print("\(ok ? "PASA " : "FALLA")  consola que corta por tamaño: los archivos van seguidos, sin huecos")
         return ok
     }
 
