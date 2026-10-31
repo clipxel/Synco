@@ -262,7 +262,8 @@ public enum ProjectBuilder {
                 a.value.reduce(0) { $0 + $1.duration } < b.value.reduce(0) { $0 + $1.duration }
             }?.key
         }
-        let seqRate = Rate(mostCommon { (($0.fps * 100).rounded() / 100) } ?? 25)
+        // Counted by standard rate, so a phone's 29.83 and 30.02 add up with the 29.97 clips.
+        let seqRate = Rate(mostCommon { Rate($0.fps).actual } ?? 25)
         let size = mostCommon { [$0.width, $0.height] } ?? [1920, 1080]
 
         let doc = XMLDocument(rootElement: XMLElement(name: "xmeml"))
@@ -404,18 +405,25 @@ public enum ProjectBuilder {
         return skipped
     }
 
+    /// For the self-test: the standard rate a file's rate is taken as.
+    public static func rateForTest(_ fps: Double) -> (timebase: Int, ntsc: Bool) { let r = Rate(fps); return (r.timebase, r.ntsc) }
+
     /// An editor frame rate: whole-number timebase, with NTSC for 23.976, 29.97 and 59.94.
     struct Rate {
         let timebase: Int
         let ntsc: Bool
         var actual: Double { ntsc ? Double(timebase) * 1000 / 1001 : Double(timebase) }
 
+        /// The standard rate nearest to what a file says (within 2 %): phones that record at a
+        /// variable rate report 29.83 or 30.02 for what is 29.97.
         init(_ fps: Double) {
-            let whole = Int(fps.rounded())
-            if abs(fps - Double(whole)) > 0.005, abs(fps - Double(whole) * 1000 / 1001) < 0.01 {
-                timebase = whole; ntsc = true
+            let standard: [(Int, Bool)] = [(24, true), (24, false), (25, false), (30, true), (30, false), (48, true), (48, false),
+                                           (50, false), (60, true), (60, false), (100, false), (120, true), (120, false), (240, false)]
+            let rate = { (r: (Int, Bool)) in r.1 ? Double(r.0) * 1000 / 1001 : Double(r.0) }
+            if let near = standard.min(by: { abs(rate($0) - fps) < abs(rate($1) - fps) }), abs(rate(near) - fps) <= fps * 0.02 {
+                timebase = near.0; ntsc = near.1
             } else {
-                timebase = max(1, whole); ntsc = false
+                timebase = max(1, Int(fps.rounded())); ntsc = false
             }
         }
 

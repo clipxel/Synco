@@ -253,7 +253,12 @@ enum Selftest {
         let ok = abs(i.duration - 62.5) < 0.01 && i.hasVideo && i.width == 1080 && i.height == 1920
             && abs(i.fps - 29.97) < 0.001 && i.channels == 2 && i.sampleRate == 48000
         print("\(ok ? "PASA " : "FALLA")  datos de un video vertical de teléfono (ffmpeg, líneas de Windows)")
-        return ok
+        // Rates as files report them, to the standard ones a sequence uses.
+        let rates: [(Double, Int, Bool)] = [(29.83, 30, true), (30.02, 30, false), (29.9, 30, true), (29.97, 30, true), (23.976, 24, true), (24, 24, false),
+                                            (25, 25, false), (50, 50, false), (59.94, 60, true), (60, 60, false), (119.88, 120, true)]
+        let snapped = rates.allSatisfy { r in let x = ProjectBuilder.rateForTest(r.0); return x.timebase == r.1 && x.ntsc == r.2 }
+        print("\(snapped ? "PASA " : "FALLA")  velocidades de filmación distintas (29,83 de un teléfono es 29,97)")
+        return ok && snapped
     }
 
     /// 16-bit mono PCM WAV.
