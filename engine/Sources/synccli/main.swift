@@ -106,9 +106,13 @@ case "drift":
     let session = SyncSession(project: project, cache: cache, rate: rate)
     try session.readAudio()
     let starts = project.mediaStarts()
-    let recorder = Dictionary(grouping: project.clips.filter { !$0.hasVideo }, by: \.device)
-        .max { a, b in a.value.reduce(0) { $0 + (session.audio[$1.fileID]?.duration ?? 0) } < b.value.reduce(0) { $0 + (session.audio[$1.fileID]?.duration ?? 0) } }?.value ?? []
-    let end = recorder.compactMap { c in starts[c.fileID].map { $0 + (session.audio[c.fileID]?.duration ?? 0) } }.max() ?? 0
+    func seconds(_ c: ProjectClip) -> Double { session.audio[c.fileID]?.duration ?? 0 }
+    var total = [String: Double]()
+    for c in project.clips where !c.hasVideo { total[c.device, default: 0] += seconds(c) }
+    let longest: String = total.max { $0.value < $1.value }?.key ?? ""
+    let recorder: [ProjectClip] = project.clips.filter { $0.device == longest }
+    var end = 0.0
+    for c in recorder { if let s = starts[c.fileID] { end = max(end, s + seconds(c)) } }
     var line = [Float](repeating: 0, count: Int(end * rate) + 1)
     for c in recorder {
         guard let s = starts[c.fileID], let a = session.audio[c.fileID] else { continue }
