@@ -42,7 +42,9 @@ jobs:
           [ -f "$NOTES" ] || { echo "Synco $(cat engine/VERSION)" > notes.md; NOTES=notes.md; }
           # GitHub a veces responde 5xx al crear un release: reintentar.
           for i in 1 2 3 4; do
-            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Synco $(cat engine/VERSION)" --notes-file "$NOTES" --verify-tag && exit 0
+            # Not the latest yet: the page's download buttons and the apps' update check follow the
+            # latest release, and this one has no installers until the end (update.json marks it).
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Synco $(cat engine/VERSION)" --notes-file "$NOTES" --verify-tag --latest=false && exit 0
             sleep 15
           done
           exit 1
@@ -285,3 +287,5 @@ jobs:
           sys.exit(f"faltan: {missing}" if missing else 0)
           PY
           gh release upload "$TAG" update.json --clobber --repo "$GITHUB_REPOSITORY"
+          # Everything is there: now it is the version the page and the apps offer.
+          gh release edit "$TAG" --latest --repo "$GITHUB_REPOSITORY"
