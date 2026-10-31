@@ -81,6 +81,15 @@ final class Server {
         let url = URL(fileURLWithPath: path)
         let project = try FCP7Project(url: url)
         guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
+        // Every file's recording date, read up front (it reads each file's header): with the progress.
+        let total = project.clips.count
+        let lock = NSLock()
+        var done = 0
+        DispatchQueue.concurrentPerform(iterations: total) { i in
+            _ = recordingStart(url: project.clips[i].url)
+            lock.lock(); done += 1; let n = done; lock.unlock()
+            if n % 20 == 0 || n == total { send(["event": "opening", "done": n, "total": total]) }
+        }
         session = SyncSession(project: project, cache: cache, rate: rate)
         outcome = nil
         fileURL = url

@@ -239,7 +239,9 @@ struct StatusBar: View {
         HStack(spacing: Theme.Size.space3) {
             StatusLight(on: model.phase == .reading, label: "lectura")
             StatusLight(on: model.phase == .matching, label: "búsqueda")
-            if model.phase == .reading, model.readTotal > 0 {
+            if model.phase == .reading, model.readTotal == 0 {
+                ProgressView().controlSize(.small)
+            } else if model.phase == .reading, model.readTotal > 0 {
                 ProgressView(value: Double(model.readDone), total: Double(model.readTotal))
                     .frame(width: 160)
                     .tint(Theme.accent)

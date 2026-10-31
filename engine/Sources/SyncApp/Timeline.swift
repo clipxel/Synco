@@ -276,7 +276,24 @@ struct NewTrackLane: View {
         .background(Theme.trackBg)
     }
 
-    private var start: some View {
+    @ViewBuilder private var start: some View {
+        if model.phase == .reading {
+            // Opening or building a project: what it is doing, where the eye is.
+            VStack(spacing: Theme.Size.space3) {
+                ProgressView().controlSize(.large)
+                Text(model.message).font(Theme.Font.lg)
+                if model.readTotal > 0 {
+                    ProgressView(value: Double(model.readDone), total: Double(model.readTotal))
+                        .frame(width: 280)
+                        .tint(Theme.accent)
+                }
+            }
+        } else {
+            welcome
+        }
+    }
+
+    private var welcome: some View {
         VStack(spacing: Theme.Size.space4) {
             Image(systemName: "rectangle.stack.badge.plus")
                 .font(.system(size: 44))

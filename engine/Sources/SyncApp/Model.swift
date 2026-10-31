@@ -326,11 +326,53 @@ final class AppModel: ObservableObject {
         return fileURL.deletingLastPathComponent()
     }
 
+    /// Opens a project: the XML and every file's recording date are read off the main thread
+    /// (a long event can take a while), with the progress on screen.
     func open(_ url: URL) {
         stop()
+        let token = UUID()
+        openToken = token
+        phase = .reading
+        readDone = 0
+        readTotal = 0
+        message = "Abriendo \(url.lastPathComponent)…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result: Result<FCP7Project, Error>
+            do {
+                let project = try FCP7Project(url: url)
+                guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
+                let total = project.clips.count
+                await MainActor.run { self?.readTotal = total }
+                // The recording dates, which the tracks are ordered by: they read every file's header.
+                let lock = NSLock()
+                var done = 0
+                DispatchQueue.concurrentPerform(iterations: total) { i in
+                    _ = recordingStart(url: project.clips[i].url)
+                    lock.lock(); done += 1; let n = done; lock.unlock()
+                    if n % 20 == 0 || n == total {
+                        Task { @MainActor in
+                            guard let self, self.openToken == token else { return }
+                            self.readDone = n
+                            self.message = "Abriendo \(url.lastPathComponent): \(n) de \(total) archivos…"
+                        }
+                    }
+                }
+                result = .success(project)
+            } catch {
+                result = .failure(error)
+            }
+            await MainActor.run {
+                guard let self, self.openToken == token else { return }
+                self.opened(result, url: url)
+            }
+        }
+    }
+
+    private var openToken = UUID()
+
+    private func opened(_ result: Result<FCP7Project, Error>, url: URL) {
         do {
-            let project = try FCP7Project(url: url)
-            guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
+            let project = try result.get()
             self.project = project
             fileURL = url
             session = SyncSession(project: project)

@@ -37,6 +37,7 @@ const quality = (id) => S.placements[id]?.quality;
 function message(text, isError = false) {
   $("message").textContent = text;
   $("message").classList.toggle("err", isError);
+  $("working-text").textContent = text;
 }
 
 // MARK: Open and read
@@ -48,17 +49,23 @@ async function chooseFile() {
 
 async function open(path) {
   if (busy()) await B.send("cancel").catch(() => {});
+  // A long event takes a while to open: say so right away.
+  const name = path.split(/[\\/]/).pop();
+  Object.assign(S, { phase: "reading", readDone: 0, readTotal: 0, opening: name });
+  message(`Abriendo ${name}…`);
+  render();
   try {
     loaded(await B.send("open", { path }));
     await read();
   } catch (e) {
-    S.phase = "failed";
+    S.phase = "failed"; S.opening = null;
     message(`No se pudo abrir ${path.split(/[\\/]/).pop()}. ¿Es un XML de Premiere (Final Cut Pro 7 XML)?`, true);
     render();
   }
 }
 
 function loaded(project) {
+  S.opening = null;
   const path = project.path;
   Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null });
   buildTracks();
@@ -127,6 +134,13 @@ function dropHover(at) {
   $("newtrack").classList.toggle("target", !!(inside && !track));
   draw();
 }
+
+B.on("opening", (e) => {
+  if (!S.opening) return;
+  S.readDone = e.done; S.readTotal = e.total;
+  message(`Abriendo ${S.opening}: ${e.done} de ${e.total} archivos…`);
+  render();
+});
 
 B.on("build", (e) => {
   S.readDone = e.done; S.readTotal = e.total;
@@ -256,6 +270,9 @@ function render() {
   const p = S.project;
   const has = !!p;
   $("empty").hidden = has;
+  // Opening or building: what it is doing, in the middle of the screen.
+  $("empty").classList.toggle("working", !has && S.phase === "reading");
+  $("working-text").textContent = $("message").textContent;
   $("timeline").hidden = $("zoombar").hidden = $("overview").hidden = $("newtrack").hidden = !has;
   $("newtrack-text").textContent = p?.built ? "Soltá acá una carpeta o clips para crear otra pista" : "Soltá acá carpetas para empezar un proyecto nuevo con ellas";
   // Header
