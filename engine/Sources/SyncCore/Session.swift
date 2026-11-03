@@ -53,7 +53,7 @@ public struct SyncOutcome {
     public internal(set) var placements: [Placement]
     /// Timeline frame where each clip's media starts, earliest clip at zero.
     public internal(set) var starts: [String: Int]
-    public let checks: [Syncer.Crosscheck]
+    public internal(set) var checks: [Syncer.Crosscheck]
     /// Same-device clips that ended up overlapping (always a wrong placement).
     public let overlaps: [String]
     public let seconds: Double
@@ -68,6 +68,8 @@ public struct SyncOutcome {
     public var strongNear: (z: Float, ratio: Float)? = nil
     /// Drones added after the sync, each a track of its own (see `SyncSession.addDrone`).
     public internal(set) var drones: [DroneGroup] = []
+    /// Frames each clip was moved by hand after the sync (see `nudge`).
+    public internal(set) var manual: [String: Int] = [:]
 
     public var synced: Int { placements.filter { $0.method.synced }.count }
 
@@ -335,6 +337,12 @@ public final class SyncSession {
             md += "\n## Drones\n\n"
             md += "Agregados después de sincronizar: por la hora de cada toma y por las luces que vieron a la vez que las cámaras.\n\n"
             for d in outcome.drones { md += "- \(d.summary)\n" }
+        }
+        if !outcome.manual.isEmpty {
+            md += "\n## Corregidos a mano\n\n"
+            for (id, f) in outcome.manual.sorted(by: { $0.key < $1.key }) {
+                md += "- \(byID[id]?.name ?? id): \(f > 0 ? "+" : "")\(f) cuadro(s)\n"
+            }
         }
         md += "\n## Verificación cruzada\n\n"
         md += "Pares de clips de dispositivos distintos que quedaron superpuestos, comparados entre sí directamente: "

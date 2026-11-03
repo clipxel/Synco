@@ -6,6 +6,7 @@ and tests on any machine without Rust: serves desktop/ui and bridges it to `sync
 POST /cmd  {"id":..,"cmd":..}  -> written to the engine's stdin
 GET  /events                   -> the engine's stdout lines, as server-sent events
 POST /dialog {"kind": "open"|"save"|"folder", ...} -> a path typed in the terminal (dev only)
+GET  /file?path=...            -> a local media file, with byte ranges (what Tauri's asset protocol does)
 """
 import json, os, queue, subprocess, sys, threading
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -45,7 +46,39 @@ class Handler(SimpleHTTPRequestHandler):
             answers.update(self.body()); self.send_response(204); self.end_headers()
         else:
             self.send_response(404); self.end_headers()
+    def media(self):
+        from urllib.parse import urlparse, parse_qs
+        import mimetypes
+        path = parse_qs(urlparse(self.path).query).get('path', [''])[0]
+        if not os.path.isfile(path):
+            self.send_response(404); self.end_headers(); return
+        size = os.path.getsize(path)
+        start, end = 0, size - 1
+        rng = self.headers.get('Range')
+        if rng and rng.startswith('bytes='):
+            a, _, b = rng[6:].partition('-')
+            start = int(a) if a else max(0, size - int(b))
+            end = int(b) if a and b else size - 1
+            self.send_response(206)
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        else:
+            self.send_response(200)
+        self.send_header('Content-Type', mimetypes.guess_type(path)[0] or 'video/mp4')
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Content-Length', str(end - start + 1))
+        self.end_headers()
+        try:
+            with open(path, 'rb') as f:
+                f.seek(start)
+                left = end - start + 1
+                while left > 0:
+                    chunk = f.read(min(1 << 20, left))
+                    if not chunk: break
+                    self.wfile.write(chunk); left -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
     def do_GET(self):
+        if self.path.startswith('/file?'): return self.media()
         if self.path != '/events': return super().do_GET()
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream'); self.send_header('Cache-Control', 'no-cache'); self.end_headers()

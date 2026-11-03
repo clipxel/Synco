@@ -69,6 +69,11 @@ final class Server {
         case "removeTrack": return try removeTrack(msg["track"] as? String ?? "")
         case "addDrone": return try addDrone(msg["paths"] as? [String] ?? [])
         case "removeDrone": return try removeDrone(msg["name"] as? String ?? "")
+        // "clip", not "id": "id" is the request's.
+        case "removeClip": return try removeClip(msg["clip"] as? String ?? "")
+        case "moveClip": return try moveClip(msg["clip"] as? String ?? "", like: msg["like"] as? String ?? "")
+        case "nudge": return try nudge(msg["clip"] as? String ?? "", by: msg["frames"] as? Int ?? 0)
+        case "preview": return try preview(msg)
         case "cacheSize": return ["bytes": cacheSize()]
         case "clearCache": clearCache(days: msg["days"] as? Int); return ["bytes": cacheSize()]
         case "checkUpdate": return try checkUpdate(msg)
@@ -234,6 +239,8 @@ final class Server {
         options.isCancelled = { flag.isSet }
         let ignoring = Set(msg["ignoring"] as? [String] ?? [])
         var result = try session.sync(options: options, ignoring: ignoring) { line in self.send(["event": "log", "line": line]) }
+        // The frames moved by hand before stay moved, on top of the new sync.
+        result.applyManual(outcome?.manual ?? [:])
         // The drones added before go back in, on top of the new sync.
         for urls in droneSources {
             result = try session.addDrone(urls, to: result, log: { line in self.send(["event": "log", "line": line]) }, cancelled: { flag.isSet })
@@ -271,6 +278,54 @@ final class Server {
         return describe(result, session)
     }
 
+    // MARK: By hand, once synced
+
+    /// Takes a clip out of the project (the file stays). Returns the project, and the sync if there is one.
+    private func removeClip(_ id: String) throws -> [String: Any] {
+        guard let session else { throw ServerError("no hay proyecto abierto") }
+        stopAhead()
+        session.removeClip(id, from: &outcome)
+        saveBuilt()
+        return edited(session)
+    }
+
+    /// Moves a clip onto the tracks of the clip `like`'s device.
+    private func moveClip(_ id: String, like: String) throws -> [String: Any] {
+        guard let session else { throw ServerError("no hay proyecto abierto") }
+        stopAhead()
+        do { try session.project.move(id, like: like) } catch let e as EditError { throw ServerError(e.description) }
+        saveBuilt()
+        return edited(session)
+    }
+
+    private func edited(_ session: SyncSession) -> [String: Any] {
+        var out: [String: Any] = ["project": describe(session.project, path: fileURL?.path ?? "")]
+        if let outcome { out["outcome"] = describe(outcome, session) }
+        return out
+    }
+
+    /// A project built from folders is Synco's own file: written again as it is now.
+    private func saveBuilt() {
+        guard isBuilt, let session, let url = fileURL, let sources = ProjectBuilder.sources(of: session.project) else { return }
+        _ = try? ProjectBuilder.build(sources, name: session.project.sequenceName, to: url)
+    }
+
+    private func nudge(_ id: String, by frames: Int) throws -> [String: Any] {
+        guard let session, var current = outcome else { throw ServerError("primero hay que sincronizar") }
+        current.nudge(id, by: frames)
+        outcome = current
+        return ["starts": current.starts, "manual": current.manual, "report": session.report(current)]
+    }
+
+    /// The synced sound from timeline second `from`, a WAV in base64 (see SyncSession.preview).
+    private func preview(_ msg: [String: Any]) throws -> [String: Any] {
+        guard let session, let outcome else { throw ServerError("primero hay que sincronizar") }
+        let from = msg["from"] as? Double ?? 0, length = min(60, msg["length"] as? Double ?? 15)
+        let rate = 24000.0
+        let samples = session.preview(outcome, from: from, length: length, muted: Set(msg["muted"] as? [String] ?? []), rate: rate)
+        return ["from": from, "length": length, "wav": wavData(samples, rate: rate).base64EncodedString()]
+    }
+
     private func describe(_ result: SyncOutcome, _ session: SyncSession) -> [String: Any] {
         let quality: (Placement) -> String = {
             switch result.quality($0) { case .exact: return "exact"; case .approximate: return "approximate"; case .guessed: return "guessed" }
@@ -285,6 +340,7 @@ final class Server {
                 return d
             },
             "starts": result.starts,
+            "manual": result.manual,
             "synced": result.synced,
             "seconds": result.seconds,
             "checks": result.checks.count,

@@ -15,10 +15,10 @@ public final class ProjectClip {
     /// its own track, stereo pairs together), and within a track, its folder.
     public internal(set) var device: String
     /// The editor track that defines the device ("V1", "A7").
-    public let track: String
+    public internal(set) var track: String
     /// The device's name when Synco built the project from folders ("CAM A"): every file
     /// in that folder and its subfolders is the same device.
-    public let deviceName: String?
+    public internal(set) var deviceName: String?
     public var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
     /// Whether the editor says the file has a picture (a camera or phone, not a recorder).
     public let hasVideo: Bool
@@ -61,7 +61,7 @@ public final class FCP7Project {
     /// The sequence's whole-number timebase, as editors label it ("24", "30").
     public let timebase: Int
     public let sequenceName: String
-    public private(set) var clips: [ProjectClip] = []
+    public internal(set) var clips: [ProjectClip] = []
     /// Stills on the timeline (photos, graphics): no sound, so they are left where they are.
     public private(set) var skippedImages: [String] = []
     public static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif", "bmp",

@@ -103,7 +103,7 @@ public struct DroneGroup {
     /// "DRON 1", "DRON 2"… as it shows on the timeline and in the editor.
     public let name: String
     public let folder: String
-    public let clips: [ProjectClip]
+    public internal(set) var clips: [ProjectClip]
     let media: [String: MediaInfo]
     /// What was done, in a line or two, for the screen and the report.
     public let summary: String

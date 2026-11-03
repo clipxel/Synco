@@ -73,6 +73,11 @@ const backend = {
   },
   openURL(url) { inTauri ? T.opener.openUrl(url) : window.open(url, "_blank"); },
   reveal(path) { if (inTauri) T.opener.revealItemInDir(path); },
+  /** Opens a file with the app the system uses for it. */
+  openPath(path) { if (inTauri) T.opener.openPath(path); },
+  copyText(text) { return navigator.clipboard?.writeText(text).catch(() => {}); },
+  /** A local media file as a URL the page can play (Tauri's asset protocol; the dev server's /file). */
+  fileURL(path) { return inTauri ? T.core.convertFileSrc(path) : "/file?path=" + encodeURIComponent(path); },
 
   async version() { return inTauri ? T.app.getVersion() : "dev"; },
   async platform() { return inTauri ? T.core.invoke("platform") : "dev"; },

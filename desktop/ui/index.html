@@ -56,14 +56,19 @@
 
   <main class="main">
     <div class="zoombar" id="zoombar" hidden>
+      <button class="icon" id="play" title="Reproducir lo sincronizado (espacio): si dos clips no están bien, se escucha como un eco" hidden>▶</button>
+      <span id="playtime"></span>
+      <span class="grow"></span>
       <span id="scale"></span>
       <button class="icon" id="zoom-out" title="Alejar (Ctrl+−)">−</button>
       <button class="icon" id="zoom-in" title="Acercar (Ctrl++)">+</button>
       <button class="icon" id="zoom-fit" title="Ver todo (Ctrl+0)">↔</button>
     </div>
+    <div class="ruler" id="ruler" hidden><i></i><canvas id="ruler-canvas"></canvas></div>
     <div class="timeline" id="timeline" hidden>
       <div class="heads" id="heads"></div>
-      <div class="lanes" id="lanes"><canvas id="canvas"></canvas><div class="tip" id="tip" hidden></div></div>
+      <div class="lanes" id="lanes"><canvas id="canvas"></canvas><div class="tip" id="tip" hidden></div>
+        <div class="picture" id="picture" hidden><video id="video" muted playsinline preload="auto"></video><span id="picture-name"></span></div></div>
     </div>
     <div class="newtrack" id="newtrack" hidden><div class="plus">+</div><div class="slot" id="newtrack-text">Soltá acá una carpeta o clips para crear otra pista</div></div>
     <div class="overview" id="overview" hidden><i id="overview-thumb"></i></div>
@@ -82,6 +87,7 @@
   </footer>
 
   <div id="veil" class="veil" hidden></div>
+  <div id="menu" class="menu" hidden></div>
 
   <script src="backend.js"></script>
   <script src="app.js"></script>

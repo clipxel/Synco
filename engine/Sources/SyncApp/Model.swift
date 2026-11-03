@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import SwiftUI
 import SyncCore
 
@@ -122,10 +123,18 @@ final class AppModel: ObservableObject {
     @Published var showReport = false
     /// Said once the audio is read, after "Listo para sincronizar."
     private var notice: String?
+    /// Listening to the synced result (see Editing.swift): where, whether it plays, what is heard.
+    @Published var playhead: Double?
+    @Published var playing = false
+    @Published var mutedTracks = Set<String>()
+    @Published var soloTrack: String?
+    @Published var pictureClip: String?
+    let videoPlayer = AVPlayer()
+    let playback = Playback()
     @Published var prefs: AppPrefs { didSet { savePrefs() } }
 
     private(set) var session: SyncSession?
-    private(set) var outcome: SyncOutcome?
+    var outcome: SyncOutcome?
     private let cancel = CancelFlag()
     private var readTask: Task<Void, Never>?
     /// The slow search, started on its own once the audio is read (see SyncSession.searchAhead).
@@ -290,6 +299,11 @@ final class AppModel: ObservableObject {
         placements = [:]
         starts = nil
         selected = nil
+        playhead = nil
+        pictureClip = nil
+        mutedTracks = []
+        soloTrack = nil
+        videoPlayer.replaceCurrentItem(with: nil)
         missing = []
         phase = .empty
         message = "Soltá en la línea de tiempo las carpetas de tus cámaras y grabadores, o un XML de tu editor."
@@ -400,6 +414,11 @@ final class AppModel: ObservableObject {
             durations = [:]
             ignored = []
             selected = nil
+        playhead = nil
+        pictureClip = nil
+        mutedTracks = []
+        soloTrack = nil
+        videoPlayer.replaceCurrentItem(with: nil)
             buildTracks()
             prefs.recents = ([url.path] + prefs.recents.filter { $0 != url.path }).prefix(8).map { $0 }
             refreshMissing()
@@ -416,7 +435,7 @@ final class AppModel: ObservableObject {
         if let fileURL { open(fileURL) }
     }
 
-    private func buildTracks() {
+    func buildTracks() {
         guard let project else { tracks = []; return }
         var order = [String]()
         var byDevice = [String: [ProjectClip]]()
@@ -582,7 +601,9 @@ final class AppModel: ObservableObject {
             await MainActor.run {
                 guard let self, self.session === session else { return }
                 switch result {
-                case .success(let outcome):
+                case .success(var outcome):
+                    // The frames moved by hand before stay moved, on top of the new sync.
+                    outcome.applyManual(self.outcome?.manual ?? [:])
                     self.outcome = outcome
                     self.placements = Dictionary(uniqueKeysWithValues: outcome.placements.map { ($0.id, $0) })
                     self.starts = outcome.starts
@@ -612,6 +633,7 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        pause()
         cancel.set(true)
         _ = stopSearchAhead()
     }

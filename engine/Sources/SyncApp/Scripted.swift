@@ -87,6 +87,29 @@ enum Scripted {
             if let n = value("--select").flatMap(Int.init), let clip = model.tracks.first?.clips.dropFirst(n).first {
                 model.selected = clip.fileID
             }
+            // By hand: --nudge <frames> the selected clip, --move-to <track> it, --remove it.
+            if let id = model.selected, let f = value("--nudge").flatMap(Int.init) {
+                model.nudge(id, by: f)
+                print("synco: \(model.message)")
+            }
+            if let id = model.selected, let n = value("--move-to").flatMap(Int.init), n < model.tracks.count {
+                model.moveClip(id, to: model.tracks[n])
+                print("synco: \(model.message)")
+            }
+            if let id = model.selected, args.contains("--remove") {
+                model.removeClip(id)
+                print("synco: \(model.message) · quedan \(model.clipCount) clips")
+            }
+            // --play <seconds>: plays from the selected clip, and says where it got to.
+            if let s = value("--play").flatMap(Double.init) {
+                model.play()
+                let from = model.playhead ?? 0
+                try? await Task.sleep(nanoseconds: UInt64(s * 1e9))
+                print(String(format: "synco: reproduciendo desde %.2f s, va por %.2f s, imagen de %@", from, model.playhead ?? -1,
+                             model.pictureClip.flatMap { model.clip($0)?.name } ?? "ninguna"))
+                print(String(format: "synco: imagen en %.2f s del archivo, estado %d, velocidad %.1f", model.videoPlayer.currentTime().seconds,
+                             model.videoPlayer.currentItem?.status.rawValue ?? -1, model.videoPlayer.rate))
+            }
             if let path = value("--export") {
                 model.export(to: URL(fileURLWithPath: path))
                 print("synco: \(model.message)")
@@ -107,6 +130,7 @@ enum Scripted {
                 try? await Task.sleep(nanoseconds: 800_000_000)
                 snapshot(to: URL(fileURLWithPath: path))
             }
+            model.pause()
             model.prefs = saved
             // A test run's project is not kept among the user's.
             if let built, built.deletingLastPathComponent().standardizedFileURL.path == ProjectBuilder.projectsDir.standardizedFileURL.path {

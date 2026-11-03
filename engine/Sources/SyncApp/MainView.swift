@@ -314,7 +314,29 @@ struct ClipInspector: View {
                 if !clip.exists {
                     Text("archivo no encontrado").font(Theme.Font.sm).foregroundStyle(Theme.danger)
                 }
+                if model.manualFrames(id) != 0 {
+                    Text("corrido a mano \(model.manualFrames(id) > 0 ? "+" : "")\(model.manualFrames(id)) cuadro(s)")
+                        .font(Theme.Font.sm).foregroundStyle(Theme.warning)
+                }
                 Spacer()
+                if model.outcome?.starts[id] != nil {
+                    // A frame each way by hand (⌥← ⌥→; with ⇧, ten).
+                    HStack(spacing: 2) {
+                        Button { model.nudge(id, by: -1) } label: { Image(systemName: "chevron.left") }
+                            .keyboardShortcut(.leftArrow, modifiers: [.option])
+                            .help("Un cuadro antes (⌥←)")
+                        Button { model.nudge(id, by: 1) } label: { Image(systemName: "chevron.right") }
+                            .keyboardShortcut(.rightArrow, modifiers: [.option])
+                            .help("Un cuadro después (⌥→)")
+                        Button("") { model.nudge(id, by: -10) }.keyboardShortcut(.leftArrow, modifiers: [.option, .shift]).frame(width: 0).opacity(0)
+                        Button("") { model.nudge(id, by: 10) }.keyboardShortcut(.rightArrow, modifiers: [.option, .shift]).frame(width: 0).opacity(0)
+                    }
+                    .disabled(model.busy)
+                }
+                Button("Quitar") { model.removeClip(id) }
+                    .keyboardShortcut(.delete, modifiers: [])
+                    .help("Quitar este clip del proyecto (el archivo no se borra)")
+                    .disabled(!model.canEdit)
                 Button(model.ignored.contains(id) ? "Deshacer corrección" : "Está mal: ubicarlo por su hora") {
                     model.toggleIgnored(id)
                 }
@@ -323,7 +345,7 @@ struct ClipInspector: View {
                 Button("Mostrar en Finder") { NSWorkspace.shared.activateFileViewerSelecting([clip.url]) }
                     .disabled(!clip.exists)
             } else {
-                Text("Hacé clic en un clip para ver cómo se ubicó. Arrastrá para moverte; ⌘ + rueda o los botones para acercar.")
+                Text("Hacé clic en un clip para ver cómo se ubicó, y con el botón derecho para lo que podés hacer con él. Arrastralo arriba o abajo para pasarlo a otra pista.")
                     .font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 Spacer()
             }

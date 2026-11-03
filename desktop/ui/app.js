@@ -30,6 +30,9 @@ const S = {
   readDone: 0, readTotal: 0,
   drones: [], addingDrone: false,   // drones added after the sync (the extra step)
   syncWhenRead: false,              // Sincronizar pressed while reading: it syncs as soon as that is done
+  manual: {},                       // frames each clip was moved by hand after the sync
+  playhead: null, playing: false,   // listening to the synced result
+  muted: new Set(), solo: null,     // tracks switched off while listening
 };
 const busy = () => S.phase === "reading" || S.phase === "matching" || S.addingDrone;
 /** Sincronizar can be pressed: with nothing running, or while it reads (it waits for it). */
@@ -72,7 +75,9 @@ async function open(path) {
 function loaded(project) {
   S.opening = null;
   const path = project.path;
-  Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null, drones: [] });
+  stopPlayback();
+  Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null, drones: [],
+    manual: {}, playhead: null, muted: new Set(), solo: null });
   buildTracks();
   prefs.recents = [path, ...prefs.recents.filter((p) => p !== path)].slice(0, 8);
   savePrefs();
@@ -243,7 +248,7 @@ async function synchronize() {
   render();
 }
 
-function stop() { S.syncWhenRead = false; B.send("cancel"); render(); }
+function stop() { S.syncWhenRead = false; stopPlayback(); B.send("cancel"); render(); }
 
 /** What the engine returns after a sync or a drone: every clip's place, and the drone tracks. */
 function applyOutcome(r) {
@@ -251,6 +256,7 @@ function applyOutcome(r) {
   S.starts = r.starts;
   S.report = r.report;
   S.drones = r.drones || [];
+  S.manual = r.manual || {};
   buildTracks();
 }
 
@@ -329,7 +335,7 @@ function render() {
   // Opening or building: what it is doing, in the middle of the screen.
   $("empty").classList.toggle("working", !has && S.phase === "reading");
   $("working-text").textContent = $("message").textContent;
-  $("timeline").hidden = $("zoombar").hidden = $("overview").hidden = $("newtrack").hidden = !has;
+  $("timeline").hidden = $("zoombar").hidden = $("overview").hidden = $("newtrack").hidden = $("ruler").hidden = !has;
   $("newtrack-text").textContent = p?.built ? "Soltá acá una carpeta o clips para crear otra pista" : "Soltá acá carpetas para empezar un proyecto nuevo con ellas";
   // Header
   if (has) {
@@ -362,6 +368,10 @@ function render() {
   syncBtn.title = S.phase === "reading" && !stops ? "Empieza apenas termine de leer el audio" : "";
   syncBtn.classList.toggle("primary", has && !stops && S.phase !== "done");
   for (const b of $("speed").querySelectorAll("button")) { b.classList.toggle("on", b.dataset.speed === prefs.sync.speed); b.disabled = busy() && S.phase !== "reading"; }
+  $("play").hidden = S.phase !== "done";
+  $("play").textContent = S.playing ? "❚❚" : "▶";
+  $("play").disabled = busy();
+  $("playtime").textContent = S.phase === "done" && S.playhead !== null ? fmtTC(S.playhead) : "";
   $("drone").hidden = S.phase !== "done";
   $("drone").disabled = busy();
   $("export").disabled = S.phase !== "done";
@@ -428,14 +438,19 @@ function renderHeads() {
     const d = document.createElement("div");
     d.className = "head"; d.style.height = view.rowH + "px";
     d.title = `${t.clips.length} clips en ${t.clips[0].folderPath}`;
-    d.innerHTML = `<div>${t.kind === "drone" ? "✈" : t.kind === "camera" ? "🎥" : "🎙"}</div><b></b><span></span>`;
-    if (t.kind === "drone") {
-      d.title += " · clic derecho: quitar este dron";
-      d.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`¿Quitar ${t.name}? Los archivos no se tocan.`)) removeDrone(t); };
-    } else if (S.project.built) {
-      d.title += " · clic derecho: quitar esta pista";
-      d.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`¿Quitar la pista ${t.name} (${t.deviceName})? Los archivos no se tocan.`)) removeTrack(t); };
+    d.innerHTML = `<div class="controls"><span>${t.kind === "drone" ? "✈" : t.kind === "camera" ? "🎥" : "🎙"}</span></div><b></b><span></span>`;
+    if (S.phase === "done" && t.kind !== "drone") {
+      const mute = document.createElement("button");
+      mute.textContent = S.muted.has(t.id) ? "🔇" : "🔊"; mute.className = S.muted.has(t.id) ? "off" : "";
+      mute.title = "Silenciar esta pista al reproducir";
+      mute.onclick = () => toggleMute(t);
+      const solo = document.createElement("button");
+      solo.textContent = "S"; solo.className = S.solo === t.id ? "on" : "";
+      solo.title = "Escuchar solo esta pista";
+      solo.onclick = () => toggleSolo(t);
+      d.querySelector(".controls").append(mute, solo);
     }
+    d.oncontextmenu = (e) => { e.preventDefault(); showMenu(e.clientX, e.clientY, trackMenu(t)); };
     d.querySelector("b").textContent = t.name;
     d.querySelector("span").textContent = t.folder;
     heads.append(d);
@@ -493,6 +508,17 @@ function draw() {
       }
     }
   });
+  // Where it plays from
+  if (S.playhead !== null) {
+    const x = (S.playhead - view.start) * pps;
+    if (x >= 0 && x <= W) { ctx.fillStyle = "#ef6b6b"; ctx.fillRect(x - 0.75, 0, 1.5, H); }
+  }
+  // A clip dragged onto another track
+  if (drag && drag.moveRow !== undefined && drag.moveRow !== null) {
+    ctx.strokeStyle = "#adf802"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
+    roundRect(ctx, 1, drag.moveRow * rowH + 1, W - 2, rowH - 2, 6); ctx.stroke();
+    ctx.setLineDash([]);
+  }
   // Where dropped files would go
   if (view.dropRow !== null && view.dropRow !== undefined) {
     ctx.strokeStyle = "#adf802"; ctx.lineWidth = 2; ctx.setLineDash([8, 6]);
@@ -500,6 +526,7 @@ function draw() {
     roundRect(ctx, 1, view.dropRow * rowH + 1, W - 2, rowH - 2, 6); ctx.fill(); ctx.stroke();
     ctx.setLineDash([]);
   }
+  drawRuler(W, pps);
   // Overview and scale
   const total = Math.max(totalDuration(), 1), visible = W / pps;
   const ov = $("overview").clientWidth;
@@ -566,7 +593,7 @@ function renderInspector() {
   const c = S.selected && clipById(S.selected);
   if (!c) {
     const s = document.createElement("span"); s.className = "muted";
-    s.textContent = S.project ? "Hacé clic en un clip para ver cómo se ubicó. Arrastrá para moverte; Ctrl + rueda o los botones para acercar." : "";
+    s.textContent = S.project ? "Hacé clic en un clip para ver cómo se ubicó, y con el botón derecho para lo que podés hacer con él. Arrastralo arriba o abajo para pasarlo a otra pista." : "";
     box.append(s);
     return;
   }
@@ -579,30 +606,56 @@ function renderInspector() {
   if (p) add(methodText(p), "", colors[p.quality]);
   if (p && S.starts && S.starts[c.id] !== undefined) add(`en ${fmtTC(S.starts[c.id] / S.project.fps)}`, "muted");
   if (!c.exists) add("archivo no encontrado", "", "var(--danger)");
+  const hand = S.manual[c.id] || 0;
+  if (hand) add(`corrido a mano ${hand > 0 ? "+" : ""}${hand} cuadro(s)`, "manual");
   const sp = document.createElement("div"); sp.className = "spacer"; box.append(sp);
+  const small = (text, title, fn, disabled) => {
+    const b = document.createElement("button"); b.className = "small-btn"; b.textContent = text; b.title = title; b.disabled = disabled; b.onclick = fn; box.append(b);
+  };
+  if (S.starts && S.starts[c.id] !== undefined) {
+    small("◀", "Un cuadro antes (Alt+←; con Mayús, diez)", () => nudge(c.id, -1), busy());
+    small("▶", "Un cuadro después (Alt+→; con Mayús, diez)", () => nudge(c.id, 1), busy());
+  }
+  small("Quitar", "Quitar este clip del proyecto (el archivo no se borra) · Supr", () => removeClip(c), busy());
   const fix = document.createElement("button"); fix.className = "small-btn";
   fix.textContent = S.ignored.has(c.id) ? "Deshacer corrección" : "Está mal: ubicarlo por su hora";
   fix.title = "Deja de usar el audio de este clip y lo ubica por la hora del archivo. Se aplica al volver a sincronizar.";
   fix.disabled = busy();
   fix.onclick = () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); render(); };
   box.append(fix);
-  if (B.inTauri) {
-    const reveal = document.createElement("button"); reveal.className = "small-btn"; reveal.textContent = "Mostrar en la carpeta";
-    reveal.disabled = !c.exists; reveal.onclick = () => B.reveal(c.path); box.append(reveal);
-  }
+  if (B.inTauri) small(revealText(), "", () => B.reveal(c.path), !c.exists);
 }
 
 // Mouse: drag pans, Ctrl + wheel zooms, wheel scrolls sideways, click selects.
 let drag = null;
-$("lanes").addEventListener("mousedown", (e) => { drag = { x: e.offsetX, start: view.start, moved: false }; });
+$("lanes").addEventListener("mousedown", (e) => {
+  if (e.button !== 0 || e.target !== $("canvas")) return;
+  drag = { x: e.offsetX, y: e.offsetY, start: view.start, moved: false, clip: clipAt(e.offsetX, e.offsetY), row: Math.floor(e.offsetY / view.rowH) };
+});
 window.addEventListener("mouseup", (e) => {
-  if (drag && !drag.moved && e.target === $("canvas")) { S.selected = clipAt(e.offsetX, e.offsetY)?.id || null; renderInspector(); draw(); }
+  if (drag && drag.moveRow !== null && drag.moveRow !== undefined) {
+    const target = S.tracks[drag.moveRow], clip = drag.clip;
+    drag = null;
+    moveClip(clip, target);
+    return;
+  }
+  if (drag && !drag.moved && e.target === $("canvas")) {
+    S.selected = clipAt(e.offsetX, e.offsetY)?.id || null;
+    if (S.phase === "done") seek(view.start + e.offsetX / view.pps);
+    renderInspector(); draw();
+  }
   drag = null;
 });
 $("lanes").addEventListener("mousemove", (e) => {
   if (drag) {
-    if (Math.abs(e.offsetX - drag.x) > 3) drag.moved = true;
-    if (!view.fit && drag.moved) { view.start = Math.max(0, drag.start - (e.offsetX - drag.x) / view.pps); draw(); }
+    if (Math.abs(e.offsetX - drag.x) > 3 || Math.abs(e.offsetY - drag.y) > 3) drag.moved = true;
+    // A clip dragged up or down goes to the track it is let go on.
+    const row = Math.floor(e.offsetY / view.rowH);
+    drag.moveRow = drag.clip && !busy() && row !== drag.row && moveTargets(drag.clip).includes(S.tracks[row]) ? row : null;
+    if (drag.moveRow === null && !view.fit && drag.moved && Math.abs(e.offsetX - drag.x) >= Math.abs(e.offsetY - drag.y)) {
+      view.start = Math.max(0, drag.start - (e.offsetX - drag.x) / view.pps);
+    }
+    draw();
   }
   const c = clipAt(e.offsetX, e.offsetY);
   view.hover = c;
@@ -852,6 +905,7 @@ $("open-empty").onclick = chooseFile;
 $("sync").onclick = () => (canSync() ? synchronize() : busy() ? stop() : null);
 $("export").onclick = () => exportXML();
 $("drone").onclick = () => addDrone();
+$("play").onclick = () => togglePlay();
 $("sync-settings").onclick = showSyncSettings;
 for (const b of $("speed").querySelectorAll("button")) b.onclick = () => { prefs.sync.speed = b.dataset.speed; savePrefs(); render(); };
 $("export-settings").onclick = showExportSettings;
@@ -866,7 +920,19 @@ $("zoom-fit").onclick = () => { view.fit = true; draw(); };
 B.onDrop((paths, at) => drop(paths, dropTarget(at)), dropHover);
 $("folders-empty").onclick = chooseFolders;
 window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("menu").hidden) { hideMenu(); return; }
   if (e.key === "Escape" && !$("veil").hidden && !U.step) { closeVeil(); return; }
+  // On the timeline (not typing in a field, no sheet open): play, nudge, take out.
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
+  if (!typing && $("veil").hidden) {
+    if (e.key === " " && S.phase === "done") { e.preventDefault(); togglePlay(); return; }
+    if (S.selected && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      e.preventDefault(); nudge(S.selected, (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 10 : 1)); return;
+    }
+    if (S.selected && (e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.metaKey) {
+      const c = clipById(S.selected); if (c) { e.preventDefault(); removeClip(c); } return;
+    }
+  }
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === "o") { e.preventDefault(); chooseFile(); }
@@ -896,3 +962,283 @@ render();
   }
   if (B.inTauri) setTimeout(() => checkUpdate(true), 3000);
 })();
+
+// MARK: By hand, once synced
+
+let platform = "dev";
+B.platform().then((p) => { platform = p; });
+const revealText = () => (platform === "windows" ? "Mostrar en el Explorador" : "Mostrar en la carpeta");
+
+/** The tracks a clip can move to: others of its kind (a clip with picture only where there is picture). */
+function moveTargets(c) {
+  if (droneClips().some((d) => d.id === c.id)) return [];
+  return S.tracks.filter((t) => t.kind !== "drone" && !t.clips.some((x) => x.id === c.id) && (!c.hasVideo || t.kind === "camera"));
+}
+
+/** After taking out or moving a clip: the project as it is now, keeping what was read and synced. */
+function edited(r) {
+  S.project = r.project;
+  if (r.outcome) applyOutcome(r.outcome); else buildTracks();
+  render();
+}
+
+async function removeClip(c) {
+  if (busy() || !c) return;
+  stopPlayback();
+  try {
+    const r = await B.send("removeClip", { clip: c.id });
+    if (!r.project.clips.length && !droneClips().length) {
+      Object.assign(S, { project: null, path: null, tracks: [], placements: {}, starts: null, phase: "empty" });
+      render(); return;
+    }
+    delete S.peaks[c.id]; S.ignored.delete(c.id);
+    if (S.selected === c.id) S.selected = null;
+    edited(r);
+    message(`Quitado del proyecto: ${c.name}. El archivo sigue en su carpeta; soltalo de nuevo para volver a sumarlo.`);
+  } catch (e) { message(e.message, true); }
+}
+
+async function moveClip(c, track) {
+  if (busy() || !c || !track || !track.clips.length) return;
+  try {
+    const mate = track.clips[0].name;
+    edited(await B.send("moveClip", { clip: c.id, like: track.clips[0].id }));
+    message(`${c.name} pasó a la pista de ${mate}. Sigue en el mismo lugar; al volver a sincronizar cuenta como de esa pista.`);
+  } catch (e) { message(e.message, true); }
+}
+
+async function nudge(id, frames) {
+  if (busy() || !S.starts || S.starts[id] === undefined) return;
+  const r = await B.send("nudge", { clip: id, frames });
+  S.starts = r.starts; S.manual = r.manual || {}; S.report = r.report;
+  const c = clipById(id), total = S.manual[id] || 0;
+  message(total ? `${c.name}: corrido a mano ${total > 0 ? "+" : ""}${total} cuadro(s). Escuchalo con la barra espaciadora.` : `${c.name}: de nuevo donde lo puso Synco.`);
+  render();
+  if (S.playing) play();
+}
+
+function toggleMute(t) { S.muted.has(t.id) ? S.muted.delete(t.id) : S.muted.add(t.id); render(); if (S.playing) play(); }
+function toggleSolo(t) { S.solo = S.solo === t.id ? null : t.id; render(); if (S.playing) play(); }
+const mutedClips = () => S.tracks.filter((t) => S.muted.has(t.id) || (S.solo && S.solo !== t.id)).flatMap((t) => t.clips.map((c) => c.id));
+
+// MARK: Right-click menus (the app's own: the browser's never shows)
+
+function showMenu(x, y, items) {
+  const menu = $("menu");
+  menu.innerHTML = "";
+  if (!items.length) { menu.hidden = true; return; }
+  const build = (box, list) => {
+    for (const it of list) {
+      if (it === "-") { box.append(document.createElement("hr")); continue; }
+      if (it.sub) {
+        const wrap = document.createElement("div"); wrap.className = "sub";
+        const b = document.createElement("button"); b.innerHTML = `<span></span><span>›</span>`; b.firstChild.textContent = it.label;
+        b.disabled = !!it.disabled;
+        const inner = document.createElement("div"); inner.className = "menu";
+        build(inner, it.sub);
+        wrap.append(b); if (!it.disabled) wrap.append(inner);
+        box.append(wrap); continue;
+      }
+      const b = document.createElement("button");
+      b.textContent = it.label; b.disabled = !!it.disabled;
+      if (it.danger) b.className = "danger";
+      b.onclick = () => { hideMenu(); it.fn(); };
+      box.append(b);
+    }
+  };
+  build(menu, items);
+  menu.hidden = false;
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - r.width - 4) + "px";
+  menu.style.top = Math.min(y, window.innerHeight - r.height - 4) + "px";
+}
+function hideMenu() { $("menu").hidden = true; }
+window.addEventListener("mousedown", (e) => { if (!$("menu").contains(e.target)) hideMenu(); });
+window.addEventListener("blur", hideMenu);
+// Nowhere shows the browser's menu; where there is nothing to do, nothing shows. Text fields keep theirs (copy, paste).
+document.addEventListener("contextmenu", (e) => {
+  if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  e.preventDefault();
+});
+
+function clipMenu(c, at) {
+  const synced = S.phase === "done" && S.starts && S.starts[c.id] !== undefined;
+  const isDrone = droneClips().some((d) => d.id === c.id);
+  const items = [];
+  if (synced) {
+    items.push({ label: "Reproducir desde acá", fn: () => { S.selected = c.id; seek(at); play(); }, disabled: busy() });
+    items.push({ label: "Correr a mano", disabled: busy(), sub: [
+      { label: "1 cuadro antes", fn: () => nudge(c.id, -1) }, { label: "1 cuadro después", fn: () => nudge(c.id, 1) },
+      { label: "10 cuadros antes", fn: () => nudge(c.id, -10) }, { label: "10 cuadros después", fn: () => nudge(c.id, 10) },
+    ] });
+    if (S.manual[c.id]) items.push({ label: "Volver a donde lo puso Synco", fn: () => nudge(c.id, -S.manual[c.id]), disabled: busy() });
+  }
+  const targets = moveTargets(c);
+  if (targets.length) items.push({ label: "Mover a la pista", disabled: busy(), sub: targets.map((t) => ({ label: t.name, fn: () => moveClip(c, t) })) });
+  if (!isDrone) {
+    items.push({ label: S.ignored.has(c.id) ? "Deshacer: volver a usar su audio" : "Está mal: ubicarlo por su hora", disabled: busy(),
+      fn: () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); render(); } });
+  }
+  if (items.length) items.push("-");
+  if (B.inTauri) {
+    items.push({ label: revealText(), fn: () => B.reveal(c.path), disabled: !c.exists });
+    items.push({ label: "Abrir el archivo", fn: () => B.openPath(c.path), disabled: !c.exists });
+  }
+  items.push({ label: "Copiar la ruta del archivo", fn: () => B.copyText(c.path) });
+  items.push("-");
+  items.push({ label: "Quitar del proyecto", danger: true, fn: () => removeClip(c), disabled: busy() });
+  return items;
+}
+
+function trackMenu(t) {
+  const items = [];
+  if (S.phase === "done" && t.kind !== "drone") {
+    items.push({ label: S.muted.has(t.id) ? "Volver a escuchar esta pista" : "Silenciar esta pista", fn: () => toggleMute(t) });
+    items.push({ label: S.solo === t.id ? "Escuchar todas" : "Escuchar solo esta pista", fn: () => toggleSolo(t) });
+    items.push("-");
+  }
+  if (B.inTauri && t.clips[0]) items.push({ label: revealText(), fn: () => B.reveal(t.clips[0].path), disabled: !t.clips[0].exists });
+  if (t.kind === "drone") {
+    items.push({ label: "Quitar este dron", danger: true, disabled: busy(),
+      fn: () => { if (confirm(`¿Quitar ${t.name}? Los archivos no se tocan.`)) removeDrone(t); } });
+  } else if (S.project.built) {
+    items.push({ label: "Quitar esta pista", danger: true, disabled: busy(),
+      fn: () => { if (confirm(`¿Quitar la pista ${t.name} (${t.deviceName})? Los archivos no se tocan.`)) removeTrack(t); } });
+  }
+  return items.filter((it, i, all) => !(it === "-" && (i === all.length - 1)));
+}
+
+$("lanes").addEventListener("contextmenu", (e) => {
+  const c = clipAt(e.offsetX, e.offsetY);
+  if (c) showMenu(e.clientX, e.clientY, clipMenu(c, view.start + e.offsetX / view.pps));
+});
+
+// MARK: Listening to the synced result
+
+/** The engine makes the sound a stretch at a time (each clip decoded where it plays); Web Audio
+ *  plays the stretches back to back, without gaps. A camera's picture follows. */
+const CHUNK = 15;
+const P = { ctx: null, token: 0, sources: [], anchor: null, raf: 0 };
+
+function togglePlay() { S.playing ? (stopPlayback(), render()) : play(); }
+
+function seek(t) {
+  S.playhead = Math.max(0, Math.min(t, totalDuration()));
+  if (S.playing) play(); else { showPicture(S.playhead); render(); }
+}
+
+async function play() {
+  if (S.phase !== "done" || busy()) { message("Para reproducir, primero sincronizá."); return; }
+  stopPlayback();
+  const token = ++P.token;
+  P.ctx = P.ctx || new AudioContext();
+  await P.ctx.resume();
+  const fps = S.project.fps;
+  let from = S.playhead ?? (S.selected && S.starts[S.selected] !== undefined ? S.starts[S.selected] / fps : 0);
+  S.playhead = from; S.playing = true; render();
+  const muted = mutedClips(), end = totalDuration();
+  const fetchChunk = async (at) => {
+    const r = await B.send("preview", { from: at, length: CHUNK, muted });
+    const bytes = Uint8Array.from(atob(r.wav), (ch) => ch.charCodeAt(0));
+    return P.ctx.decodeAudioData(bytes.buffer);
+  };
+  try {
+    let buffer = await fetchChunk(from);
+    if (token !== P.token) return;
+    let when = P.ctx.currentTime + 0.05, at = from;
+    P.anchor = { ctxTime: when, timeline: from };
+    const tick = () => {
+      if (token !== P.token) return;
+      const t = P.anchor.timeline + (P.ctx.currentTime - P.anchor.ctxTime);
+      S.playhead = Math.max(from, t);
+      if (S.playhead >= end) { stopPlayback(); render(); return; }
+      $("playtime").textContent = fmtTC(S.playhead);
+      showPicture(S.playhead);
+      draw();
+      P.raf = requestAnimationFrame(tick);
+    };
+    P.raf = requestAnimationFrame(tick);
+    // Each stretch starts exactly where the one before ends; the next is made while this one plays.
+    while (token === P.token && at < end) {
+      const src = P.ctx.createBufferSource();
+      src.buffer = buffer; src.connect(P.ctx.destination); src.start(when);
+      P.sources.push(src);
+      when += buffer.duration; at += CHUNK;
+      if (at >= end) break;
+      while (token === P.token && when - P.ctx.currentTime > 8) await new Promise((r) => setTimeout(r, 250));
+      if (token !== P.token) return;
+      buffer = await fetchChunk(at);
+    }
+  } catch (e) {
+    if (token === P.token) { stopPlayback(); message(`No se pudo reproducir: ${e.message}`, true); render(); }
+  }
+}
+
+function stopPlayback() {
+  P.token++;
+  cancelAnimationFrame(P.raf);
+  for (const s of P.sources) { try { s.stop(); } catch {} }
+  P.sources = [];
+  S.playing = false;
+  const v = $("video"); if (v) v.pause();
+}
+
+/** The picture at timeline second `t`: the selected clip's track if it has picture there, else the
+ *  first track with picture that does. */
+function showPicture(t) {
+  const box = $("picture"), video = $("video");
+  const withPicture = S.tracks.filter((tr) => tr.kind !== "recorder");
+  const preferred = withPicture.find((tr) => tr.clips.some((c) => c.id === S.selected));
+  let found = null;
+  for (const tr of [preferred, ...withPicture].filter(Boolean)) {
+    const c = tr.clips.find((c) => { const s = startOf(c, tr); return c.hasVideo && c.exists && t >= s && t < s + duration(c); });
+    if (c) { found = { c, offset: t - startOf(c, tr) }; break; }
+  }
+  if (!found || S.phase !== "done") { box.hidden = true; video.pause(); return; }
+  box.hidden = false;
+  if (video.dataset.id !== found.c.id) {
+    video.dataset.id = found.c.id;
+    video.src = B.fileURL(found.c.path);
+    $("picture-name").textContent = found.c.name;
+    video.onerror = () => { $("picture-name").textContent = `${found.c.name}: este formato de video no se puede mostrar acá (el sonido se escucha igual)`; };
+  }
+  // Picture follows the sound: put back only when it drifts, so it plays smoothly.
+  if (!S.playing || Math.abs(video.currentTime - found.offset) > 0.15) { try { video.currentTime = found.offset; } catch {} }
+  if (S.playing && video.paused) video.play().catch(() => {});
+  if (!S.playing && !video.paused) video.pause();
+}
+
+// MARK: Ruler
+
+function drawRuler(W, pps) {
+  const canvas = $("ruler-canvas"), dpr = window.devicePixelRatio || 1, H = 22;
+  canvas.width = W * dpr; canvas.height = H * dpr; canvas.style.width = W + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  const step = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200].find((s) => s * pps >= 80) || 7200;
+  ctx.fillStyle = "#8b929c"; ctx.font = "11px " + getComputedStyle(document.body).fontFamily; ctx.textAlign = "left";
+  for (let t = Math.floor(view.start / step) * step; t <= view.start + W / pps; t += step) {
+    const x = (t - view.start) * pps, s = Math.round(t);
+    ctx.fillRect(x, H - 7, 1, 7);
+    const label = s >= 3600 ? `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`
+      : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    ctx.fillText(label, x + 3, 11);
+  }
+  if (S.playhead !== null) {
+    const x = (S.playhead - view.start) * pps;
+    ctx.fillStyle = "#ef6b6b";
+    ctx.beginPath(); ctx.moveTo(x - 6, 0); ctx.lineTo(x + 6, 0); ctx.lineTo(x, 9); ctx.fill();
+    ctx.fillRect(x - 0.75, 0, 1.5, H);
+  }
+}
+
+$("ruler-canvas").addEventListener("mousedown", (e) => {
+  if (S.phase !== "done" || e.button !== 0) return;
+  const wasPlaying = S.playing;
+  if (wasPlaying) stopPlayback();
+  const at = (ev) => view.start + (ev.clientX - $("ruler-canvas").getBoundingClientRect().left) / view.pps;
+  const move = (ev) => { S.playhead = Math.max(0, at(ev)); showPicture(S.playhead); render(); };
+  move(e);
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", (ev) => { window.removeEventListener("mousemove", move); seek(at(ev)); if (wasPlaying) play(); }, { once: true });
+});

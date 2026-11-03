@@ -16,6 +16,8 @@ struct TimelineView: View {
     @State private var laneWidth: CGFloat = 1
     /// The row a drop would land on while dragging files over (the strip under the tracks is `tracks.count`).
     @State private var dropRow: Int?
+    /// The track a clip dragged up or down would go to.
+    @State private var moveRow: Int?
 
     var body: some View {
         GeometryReader { geo in
@@ -33,6 +35,7 @@ struct TimelineView: View {
                             zoomIn: { setZoom(pps * 2, laneW: laneW, total: total) },
                             zoomOut: { setZoom(pps / 2, laneW: laneW, total: total) },
                             pps: pps)
+                    Ruler(viewStart: viewStart, pps: pps, width: laneW)
                 }
                 ScrollView(.vertical) {
                     VStack(spacing: 0) {
@@ -60,9 +63,25 @@ struct TimelineView: View {
                     .onDrop(of: [.fileURL], delegate: TimelineDrop(model: model, rowH: rowH, row: $dropRow))
                 }
                 if !empty {
-                    Overview(viewStart: $viewStart, visible: Double(laneW) / pps, total: total)
+                    Overview(viewStart: $viewStart, visible: Double(laneW) / pps, total: total, playhead: model.playhead)
                         .frame(height: Theme.Size.overviewH)
                         .padding(.leading, Theme.Size.trackHeaderW)
+                }
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if model.pictureClip != nil, model.playhead != nil {
+                    VStack(alignment: .leading, spacing: 4) {
+                        PictureView(player: model.videoPlayer)
+                            .frame(width: 320, height: 180)
+                            .clipShape(RoundedRectangle(cornerRadius: Theme.Size.radiusMd))
+                        Text(model.pictureClip.flatMap { model.clip($0)?.name } ?? "")
+                            .font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
+                    }
+                    .padding(Theme.Size.space2)
+                    .background(RoundedRectangle(cornerRadius: Theme.Size.radiusMd).fill(Theme.surface2))
+                    .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+                    .padding(.trailing, Theme.Size.space3)
+                    .padding(.bottom, Theme.Size.overviewH + Theme.Size.space3)
                 }
             }
             .onAppear { laneWidth = laneW; installScrollMonitor(total: total) }
@@ -98,6 +117,18 @@ struct TimelineView: View {
                              hovered: hovered === clip, selected: model.selected == clip.fileID)
                 }
             }
+            // Where it plays from.
+            if let t = model.playhead {
+                let x = CGFloat((t - viewStart) * pps)
+                if x >= 0, x <= size.width {
+                    ctx.fill(Path(CGRect(x: x - 0.5, y: 0, width: 1.5, height: size.height)), with: .color(Theme.danger))
+                }
+            }
+            // A clip being dragged onto another track: that track, outlined.
+            if let r = moveRow, r < model.tracks.count {
+                ctx.stroke(Path(roundedRect: CGRect(x: 1, y: CGFloat(r) * rowH + 1, width: size.width - 2, height: rowH - 2), cornerRadius: 4),
+                           with: .color(Theme.accent), style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+            }
         }
         .frame(width: width, height: rowH * CGFloat(model.tracks.count))
         .contentShape(Rectangle())
@@ -108,16 +139,30 @@ struct TimelineView: View {
             DragGesture(minimumDistance: 0)
                 .onChanged { g in
                     if dragFrom == nil { dragFrom = (g.startLocation.x, viewStart) }
+                    // A clip dragged up or down goes to the track it is let go on.
+                    if let clip = clipAt(g.startLocation, rowH: rowH, pps: pps), model.canEdit {
+                        let row = Int(g.location.y / rowH), from = Int(g.startLocation.y / rowH)
+                        let targets = model.moveTargets(clip)
+                        moveRow = row != from && row >= 0 && row < model.tracks.count && targets.contains { $0.id == model.tracks[row].id } ? row : nil
+                        if moveRow != nil || abs(g.translation.height) > abs(g.translation.width) { return }
+                    }
                     guard let from = dragFrom, zoom != nil else { return }
                     viewStart = max(0, from.start - Double(g.location.x - from.x) / pps)
                 }
                 .onEnded { g in
-                    if abs(g.translation.width) < 3 {
+                    if let r = moveRow, let clip = clipAt(g.startLocation, rowH: rowH, pps: pps) {
+                        model.moveClip(clip.fileID, to: model.tracks[r])
+                    } else if abs(g.translation.width) < 3 && abs(g.translation.height) < 3 {
                         model.selected = clipAt(g.location, rowH: rowH, pps: pps)?.fileID
+                        if model.outcome != nil { model.seek(viewStart + Double(g.location.x) / pps) }
                     }
+                    moveRow = nil
                     dragFrom = nil
                 }
         )
+        .contextMenu {
+            if let clip = hovered { ClipMenu(clip: clip, at: hoverPoint.map { viewStart + Double($0.x) / pps }) }
+        }
         .overlay(alignment: .topLeading) {
             if let clip = hovered, let p = hoverPoint {
                 ClipTooltip(clip: clip)
@@ -344,8 +389,24 @@ struct TrackHeader: View {
 
     var body: some View {
         VStack(spacing: Theme.Size.space1) {
-            Image(systemName: track.kind == .drone ? "airplane" : track.kind == .camera ? "video.fill" : "mic.fill")
-                .font(.system(size: 16))
+            HStack(spacing: 6) {
+                Image(systemName: track.kind == .drone ? "airplane" : track.kind == .camera ? "video.fill" : "mic.fill")
+                    .font(.system(size: 16))
+                if model.outcome != nil, track.kind != .drone {
+                    Button { model.toggleMute(track) } label: {
+                        Image(systemName: model.mutedTracks.contains(track.id) ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .foregroundStyle(model.mutedTracks.contains(track.id) ? Theme.warning : Theme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Silenciar esta pista al reproducir")
+                    Button { model.toggleSolo(track) } label: {
+                        Text("S").font(Theme.Font.xs.weight(.bold))
+                            .foregroundStyle(model.soloTrack == track.id ? Theme.accent : Theme.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Escuchar solo esta pista")
+                }
+            }
             Text(track.name).font(Theme.Font.xs)
             Text(track.folder).font(Theme.Font.xs).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.middle)
         }
@@ -356,6 +417,15 @@ struct TrackHeader: View {
         .help("\(track.clips.count) clips en \(track.id)")
         .accessibilityElement(children: .combine)
         .contextMenu {
+            if model.outcome != nil, track.kind != .drone {
+                Button(model.mutedTracks.contains(track.id) ? "Volver a escuchar esta pista" : "Silenciar esta pista") { model.toggleMute(track) }
+                Button(model.soloTrack == track.id ? "Escuchar todas" : "Escuchar solo esta pista") { model.toggleSolo(track) }
+                Divider()
+            }
+            if let first = track.clips.first {
+                Button("Mostrar la carpeta en Finder") { NSWorkspace.shared.activateFileViewerSelecting([first.url]) }
+                    .disabled(!first.exists)
+            }
             if track.kind == .drone {
                 Button("Quitar este dron") { model.removeTrack(track) }.disabled(model.busy)
             } else if model.isBuilt {
@@ -399,6 +469,7 @@ struct ZoomBar: View {
 
     var body: some View {
         HStack(spacing: Theme.Size.space1) {
+            PlayControls()
             Spacer()
             Text(pps >= 1 ? String(format: "%.0f px/s", pps) : String(format: "%.0f s por punto", 1 / pps))
                 .font(Theme.Font.xs).foregroundStyle(Theme.textMuted).monospacedDigit()
@@ -420,6 +491,7 @@ struct Overview: View {
     @Binding var viewStart: Double
     let visible: Double
     let total: Double
+    var playhead: Double? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -429,6 +501,9 @@ struct Overview: View {
             ZStack(alignment: .leading) {
                 Rectangle().fill(Theme.surface2)
                 RoundedRectangle(cornerRadius: 3).fill(Theme.textMuted).frame(width: vw).offset(x: x)
+                if let p = playhead {
+                    Rectangle().fill(Theme.danger).frame(width: 2).offset(x: CGFloat(p / total) * w)
+                }
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0).onChanged { g in
@@ -436,5 +511,58 @@ struct Overview: View {
                 viewStart = min(max(0, total - visible), max(0, center - visible / 2))
             })
         }
+    }
+}
+
+/// Time along the top, like an editor's: click or drag on it to put the playhead there.
+struct Ruler: View {
+    @EnvironmentObject var model: AppModel
+    let viewStart: Double
+    let pps: Double
+    let width: CGFloat
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle().fill(Theme.surface).frame(width: Theme.Size.trackHeaderW)
+            Canvas { ctx, size in
+                ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Theme.surface))
+                let step = [1.0, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200].first { $0 * pps >= 80 } ?? 7200
+                var t = (viewStart / step).rounded(.down) * step
+                while t <= viewStart + Double(size.width) / pps {
+                    let x = CGFloat((t - viewStart) * pps)
+                    ctx.fill(Path(CGRect(x: x, y: size.height - 7, width: 1, height: 7)), with: .color(Theme.textMuted))
+                    let label = Text(rulerLabel(t)).font(Theme.Font.xs).foregroundColor(Theme.textMuted)
+                    ctx.draw(label, at: CGPoint(x: x + 3, y: 2), anchor: .topLeading)
+                    t += step
+                }
+                if let p = model.playhead {
+                    let x = CGFloat((p - viewStart) * pps)
+                    var head = Path()
+                    head.move(to: CGPoint(x: x - 6, y: 0)); head.addLine(to: CGPoint(x: x + 6, y: 0)); head.addLine(to: CGPoint(x: x, y: 9))
+                    ctx.fill(head, with: .color(Theme.danger))
+                    ctx.fill(Path(CGRect(x: x - 0.75, y: 0, width: 1.5, height: size.height)), with: .color(Theme.danger))
+                }
+            }
+            .frame(width: width)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { g in
+                    guard model.outcome != nil else { return }
+                    if model.playing { model.pause() }
+                    model.playhead = max(0, viewStart + Double(g.location.x) / pps)
+                    model.showPicture(at: model.playhead!)
+                }
+                .onEnded { g in
+                    guard model.outcome != nil else { return }
+                    model.seek(viewStart + Double(g.location.x) / pps)
+                })
+            .help(model.outcome == nil ? "" : "Hacé clic o arrastrá para elegir desde dónde reproducir")
+        }
+        .frame(height: 22)
+    }
+
+    private func rulerLabel(_ t: Double) -> String {
+        let s = Int(t.rounded())
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 }

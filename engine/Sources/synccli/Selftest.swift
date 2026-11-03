@@ -139,6 +139,7 @@ enum Selftest {
         ok = try ntscSequence(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth, $0.frames) },
                               recorder: recorderName) && ok
         ok = try fromFolders(folder: folder, cache: cache, items: items.map { ($0.name, $0.track, $0.truth) }, recorder: recorderName) && ok
+        ok = try EditTest.run(folder: folder, cache: cache, recorder: recorderName) && ok
         ok = mediaInfo() && ok
         ok = midnight() && ok
         ok = splitRecorder() && ok

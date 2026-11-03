@@ -36,7 +36,8 @@ public enum MediaError: Error, CustomStringConvertible {
 /// its resampler is not exact (at 8 kHz it stretches time by about 50 ppm,
 /// a third of a second over a 90-minute file). Filtering and decimation happen
 /// here, block by block, so a long file never sits in memory at full rate.
-public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
+/// With `from` and `length`, only that stretch of the file (in seconds).
+public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double? = nil) throws -> AudioTrack {
     let asset = AVURLAsset(url: url)
     let tracks = asset.tracks(withMediaType: .audio)
     guard !tracks.isEmpty else { throw MediaError.noAudio(url) }
@@ -49,6 +50,10 @@ public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
     let decimator = Decimator(factor: factor)
 
     let reader = try AVAssetReader(asset: asset)
+    if from > 0 || length != nil {
+        reader.timeRange = CMTimeRange(start: CMTime(seconds: max(0, from), preferredTimescale: Int32(native)),
+                                       duration: length.map { CMTime(seconds: $0, preferredTimescale: Int32(native)) } ?? .positiveInfinity)
+    }
     let settings: [String: Any] = [
         AVFormatIDKey: kAudioFormatLinearPCM,
         AVSampleRateKey: native,
@@ -88,11 +93,16 @@ public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
 /// Decodes every audio stream of a file, mixed to mono, at `rate` Hz, with ffmpeg (bundled
 /// next to the app on Windows and Linux). It decodes at the file's own sample rate, like the
 /// macOS path, and the same filter and decimation take it down from there.
-public func decodeAudio(url: URL, rate: Double) throws -> AudioTrack {
+/// With `from` and `length`, only that stretch of the file (in seconds).
+public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double? = nil) throws -> AudioTrack {
     let info = FFmpeg.probe(url)
     guard info.audioStreams > 0 else { throw MediaError.noAudio(url) }
     let native = info.sampleRate > 0 ? info.sampleRate : 48000
-    var args = ["-v", "error", "-nostdin", "-i", url.path]
+    var args = ["-v", "error", "-nostdin"]
+    // After -i, -ss cuts exactly at the sample (before it, it would jump to a keyframe).
+    args += ["-i", url.path]
+    if from > 0 { args += ["-ss", String(format: "%.6f", from)] }
+    if let length { args += ["-t", String(format: "%.6f", length)] }
     if info.audioStreams > 1 {
         let inputs = (0..<info.audioStreams).map { "[0:a:\($0)]" }.joined()
         args += ["-filter_complex", "\(inputs)amix=inputs=\(info.audioStreams):normalize=0[a]", "-map", "[a]"]
