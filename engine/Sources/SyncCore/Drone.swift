@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
 import AVFoundation
 #endif
