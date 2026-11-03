@@ -33,6 +33,10 @@ public enum SyncMethod: String {
     case clock
     /// No audio match and no usable time.
     case unplaced
+    /// A drone or camera with no sound: by its light against the cameras (added after the sync).
+    case light
+    /// A drone or camera with no sound: by its time, with its clock corrected by the light of its other clips.
+    case lightClock
 
     public var synced: Bool { self == .reference || self == .audio || self == .audioNear }
 }

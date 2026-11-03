@@ -63,6 +63,25 @@ las siguientes tardan segundos en leer.
    superpuestos se comparan entre sí directamente. Como cada uno se ubicó por
    separado, que coincidan confirma a los dos.
 
+## Drones (paso extra, después de sincronizar)
+
+Botón **Agregar dron** en la app, o `synccli dron entrada.xml salida.xml carpeta-del-dron`.
+Las tomas sin sonido van en una pista de video propia, arriba de las cámaras:
+
+1. **Su hora.** El `.SRT` del dron (DJI) trae la hora de cada cuadro al milisegundo; si no hay,
+   la fecha del archivo. El dron toma la hora del teléfono que lo maneja: es la hora real.
+2. **Su reloj contra la línea de tiempo.** Los teléfonos del proyecto también tienen la hora real,
+   y la sincronización ya sabe dónde van sus clips: dicen dónde cae la hora del dron (±10 s). Sin
+   teléfonos, los relojes de las cámaras dan una idea más gruesa y se busca más amplio.
+3. **Las luces.** Donde el dron y una cámara filmaron a la vez, un flash, una luz de escenario o
+   una nube cambian la luz que ven los dos en el mismo instante. Se compara cuánto cambia el
+   brillo de cada cuadro (en escala logarítmica, así no importa la exposición ni el perfil log).
+   Todas las tomas del dron comparten reloj: se buscan juntas para esa única corrección, y
+   después cada una de cerca. La copia liviana (`.LRF`) se lee en lugar del 4K cuando está.
+
+Azul: ubicada por sus luces. Amarillo: por su hora, con el reloj corregido por las luces de sus
+otras tomas. Rosa: solo por su hora. Una hora de otro día va al final, con sus distancias.
+
 ## Verificar cualquier resultado
 
 ```bash

@@ -311,7 +311,14 @@ public enum ProjectBuilder {
                 vTrack = el("track", attrs: ["SyncoDevice": source.name])
                 videoTracks.append(vTrack!)
             }
-            let aTracks = (0..<channels).map { _ in el("track", attrs: ["SyncoDevice": source.name]) }
+            // Stereo the way Premiere writes it: the two channels on two tracks marked as one
+            // stereo track, so it opens as one stereo clip, as the file was.
+            let aTracks = (0..<channels).map { ch in
+                el("track", attrs: channels == 2
+                    ? ["SyncoDevice": source.name, "premiereTrackType": "Stereo",
+                       "currentExplodedTrackIndex": String(ch), "totalExplodedTrackCount": "2"]
+                    : ["SyncoDevice": source.name])
+            }
             if isCamera { cameraAudio += aTracks } else { recorderAudio += aTracks }
             var at = 0
             for file in files {

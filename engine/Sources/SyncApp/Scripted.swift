@@ -3,7 +3,7 @@ import SwiftUI
 import SyncCore
 
 /// Command-line driving, for testing without clicking:
-///   Synco --open a.xml [--sync] [--export b.xml] [--select N] [--snapshot shot.png] [--quit]
+///   Synco --open a.xml [--sync] [--drone folder] [--export b.xml] [--select N] [--snapshot shot.png] [--quit]
 ///   Synco --folders cam1 cam2 audio [--drop-on N clip...] [--sync] ...   (like dropping them on the timeline:
 ///   below the tracks, each folder a new track; on track N, into it)
 /// The snapshot is the app's own window drawn to a PNG (no screen recording involved).
@@ -67,6 +67,15 @@ enum Scripted {
                 for id in model.ignored { print("synco: corregido \(model.clip(id)?.name ?? id) → \(model.placements[id]?.method.rawValue ?? "-")") }
                 print("synco: \(model.message)")
                 print(String(format: "synco: hasta acá %.1f s", Date().timeIntervalSince(t0)))
+            }
+            // The extra step: --drone <folder> adds it as "Agregar dron" does.
+            if let path = value("--drone") {
+                model.addDrones([[URL(fileURLWithPath: path)]])
+                await waitWhile { model.busy }
+                print("synco: \(model.message)")
+                for t in model.tracks where t.kind == .drone {
+                    for c in t.clips { print("synco:   \(c.name) → \(model.placements[c.fileID].map(methodText) ?? "-")") }
+                }
             }
             if let n = value("--select").flatMap(Int.init), let clip = model.tracks.first?.clips.dropFirst(n).first {
                 model.selected = clip.fileID

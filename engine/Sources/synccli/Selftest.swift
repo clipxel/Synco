@@ -142,6 +142,7 @@ enum Selftest {
         ok = mediaInfo() && ok
         ok = midnight() && ok
         ok = splitRecorder() && ok
+        ok = try DroneTest.run(folder: folder.appendingPathComponent("dron"), cache: cache) && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
         return ok
     }

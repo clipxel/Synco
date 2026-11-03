@@ -169,6 +169,31 @@ enum FFmpeg {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Runs ffmpeg writing raw frames of `frameSize` bytes to stdout, handing over one at a time.
+    static func streamBytes(_ args: [String], frameSize: Int, _ body: ([UInt8]) -> Void) throws {
+        let p = Process()
+        p.executableURL = executable
+        p.arguments = args
+        let out = Pipe(), err = Pipe()
+        p.standardOutput = out
+        p.standardError = err
+        try p.run()
+        var carry = [UInt8]()
+        while true {
+            let data = out.fileHandleForReading.availableData
+            if data.isEmpty { break }
+            carry.append(contentsOf: data)
+            var at = 0
+            while carry.count - at >= frameSize { body(Array(carry[at..<(at + frameSize)])); at += frameSize }
+            carry.removeFirst(at)
+        }
+        let message = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            throw MediaError.readFailed(URL(fileURLWithPath: args.last ?? ""), message.split(whereSeparator: \.isNewline).last.map(String.init) ?? "ffmpeg")
+        }
+    }
+
     /// Runs ffmpeg writing float32 samples to stdout, handing them over in blocks.
     static func stream(_ args: [String], _ body: ([Float]) -> Void) throws {
         let p = Process()

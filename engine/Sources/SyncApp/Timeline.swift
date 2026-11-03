@@ -344,7 +344,7 @@ struct TrackHeader: View {
 
     var body: some View {
         VStack(spacing: Theme.Size.space1) {
-            Image(systemName: track.kind == .camera ? "video.fill" : "mic.fill")
+            Image(systemName: track.kind == .drone ? "airplane" : track.kind == .camera ? "video.fill" : "mic.fill")
                 .font(.system(size: 16))
             Text(track.name).font(Theme.Font.xs)
             Text(track.folder).font(Theme.Font.xs).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.middle)
@@ -356,7 +356,9 @@ struct TrackHeader: View {
         .help("\(track.clips.count) clips en \(track.id)")
         .accessibilityElement(children: .combine)
         .contextMenu {
-            if model.isBuilt {
+            if track.kind == .drone {
+                Button("Quitar este dron") { model.removeTrack(track) }.disabled(model.busy)
+            } else if model.isBuilt {
                 Button("Quitar esta pista") { model.removeTrack(track) }.disabled(model.busy)
             }
         }

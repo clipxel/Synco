@@ -198,6 +198,12 @@ struct ActionBar: View {
                 .help("Sin audio en común: ubicados por fecha, hora y vecinos")
             Spacer()
             HStack(spacing: Theme.Size.space1) {
+                if model.phase == .done {
+                    // The extra step, once synced: drones and cameras with no sound, by their time and light.
+                    ActionButton(title: "Agregar dron", systemImage: "airplane", primary: false) { model.chooseDrone() }
+                        .disabled(model.busy)
+                        .help("Tomas sin sonido (un dron): se ubican por su hora y por las luces que vieron a la vez que las cámaras")
+                }
                 IconButton(systemImage: "gearshape", help: "Ajustes de exportación") { model.showExportSettings = true }
                 ActionButton(title: "Exportar", systemImage: "square.and.arrow.up", primary: model.phase == .done) {
                     model.export()
@@ -342,6 +348,8 @@ func methodText(_ p: Placement) -> String {
     case .audioNear: return String(format: p.note == "entre sus vecinos" ? "por audio, entre sus vecinos · z %.1f" : "por audio, cerca de su hora · z %.1f", p.z)
     case .clock: return p.note.contains("orden") ? "sin audio en común: entre sus vecinos, por fecha y hora" : "sin audio en común: por la hora del archivo"
     case .unplaced: return "sin ubicar: al final"
+    case .light: return String(format: "por las luces, contra las cámaras · z %.1f", p.z)
+    case .lightClock: return "por su hora, con el reloj del dron corregido por las luces"
     }
 }
 

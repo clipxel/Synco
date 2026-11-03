@@ -4,7 +4,7 @@ import SyncCore
 
 /// One row of the timeline: every clip from one card (camera, phone or recorder folder).
 struct TrackRow: Identifiable {
-    enum Kind { case camera, recorder }
+    enum Kind { case camera, recorder, drone }
     let id: String
     let kind: Kind
     let name: String
@@ -170,15 +170,21 @@ final class AppModel: ObservableObject {
 
     // MARK: Derived
 
-    var busy: Bool { phase == .reading || phase == .matching }
+    var busy: Bool { phase == .reading || phase == .matching || addingDrone }
+    /// Placing a drone after the sync (the extra step, on its own).
+    @Published var addingDrone = false
+    /// The drones added, kept to add them again after the next sync.
+    private var droneSources = [[URL]]()
     var cameras: Int { tracks.filter { $0.kind == .camera }.count }
     var recorders: Int { tracks.filter { $0.kind == .recorder }.count }
     var clipCount: Int { project?.clips.count ?? 0 }
+    var droneClips: [ProjectClip] { outcome?.drones.flatMap(\.clips) ?? [] }
     var syncedCount: Int { placements.values.filter { $0.method.synced }.count }
 
     func count(_ q: SyncQuality) -> Int {
         guard let outcome else { return 0 }
-        return placements.values.filter { outcome.quality($0) == q }.count
+        let drones = Set(droneClips.map(\.fileID))
+        return placements.values.filter { !drones.contains($0.id) && outcome.quality($0) == q }.count
     }
 
     /// Blue, yellow or red for a clip, once synced.
@@ -209,7 +215,7 @@ final class AppModel: ObservableObject {
         tracks.flatMap { t in t.clips.map { start($0, in: t) + duration($0) } }.max() ?? 0
     }
 
-    func clip(_ id: String) -> ProjectClip? { project?.clips.first { $0.fileID == id } }
+    func clip(_ id: String) -> ProjectClip? { project?.clips.first { $0.fileID == id } ?? droneClips.first { $0.fileID == id } }
 
     // MARK: Open
 
@@ -259,6 +265,7 @@ final class AppModel: ObservableObject {
 
     /// Takes a track out of a project built from folders.
     func removeTrack(_ track: TrackRow) {
+        if track.kind == .drone { removeDrone(track); return }
         guard isBuilt, !busy, let name = track.clips.first?.deviceName else { return }
         let sources = (project.flatMap(ProjectBuilder.sources(of:)) ?? []).filter { $0.name != name }
         if sources.isEmpty { close(); return } else { rebuild(sources) }
@@ -271,6 +278,7 @@ final class AppModel: ObservableObject {
         session = nil
         fileURL = nil
         outcome = nil
+        droneSources = []
         tracks = []
         placements = [:]
         starts = nil
@@ -377,6 +385,7 @@ final class AppModel: ObservableObject {
             fileURL = url
             session = SyncSession(project: project)
             outcome = nil
+            droneSources = []
             placements = [:]
             starts = nil
             peaks = [:]
@@ -419,8 +428,11 @@ final class AppModel: ObservableObject {
             rows.append(TrackRow(id: device, kind: video ? .camera : .recorder,
                                  name: video ? "CÁMARA \(cams)" : "GRABADOR \(recs)", folder: folder, clips: clips))
         }
-        // Cameras on top, recorders at the bottom, like an editor's timeline.
-        tracks = rows.filter { $0.kind == .camera } + rows.filter { $0.kind == .recorder }
+        // Drones on top, then cameras, recorders at the bottom, like an editor's timeline.
+        let drones = (outcome?.drones ?? []).map { d in
+            TrackRow(id: "dron|" + d.name, kind: .drone, name: d.name, folder: "por imagen · " + d.folder, clips: d.clips)
+        }
+        tracks = drones + rows.filter { $0.kind == .camera } + rows.filter { $0.kind == .recorder }
     }
 
     func refreshMissing() {
@@ -566,6 +578,10 @@ final class AppModel: ObservableObject {
                     if !outcome.overlaps.isEmpty { self.message += " \(outcome.overlaps.count) solape(s) a revisar." }
                     if let warning = outcome.warnings.first { self.message = "⚠️ " + warning + " · " + self.message }
                     if self.prefs.soundWhenDone { NSSound(named: "Glass")?.play() }
+                    // The drones added before go back in, on top of the new sync.
+                    let again = self.droneSources
+                    self.droneSources = []
+                    if !again.isEmpty { self.addDrones(again) }
                 case .failure(let error):
                     if error is SyncCancelled {
                         self.phase = .stopped
@@ -591,6 +607,75 @@ final class AppModel: ObservableObject {
 
     func clearFixes() {
         ignored = []
+    }
+
+    // MARK: Drones
+
+    /// The extra step once synced: a drone's videos (or any camera with no sound), placed by
+    /// their time and the light they saw with the cameras.
+    func chooseDrone() {
+        guard phase == .done, !busy else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Agregar dron"
+        panel.message = "Elegí la carpeta (o los videos) del dron: se ubican por su hora y por las luces que vieron con las cámaras."
+        if panel.runModal() == .OK { addDrones([panel.urls]) }
+    }
+
+    /// Adds each set of files as one drone, one after another.
+    func addDrones(_ sets: [[URL]]) {
+        guard let session, var current = outcome, !sets.isEmpty else { return }
+        addingDrone = true
+        cancel.set(false)
+        let cancel = self.cancel
+        message = "Agregando el dron: leyendo la luz de sus tomas…"
+        Task.detached(priority: .userInitiated) { [weak self] in
+            var added = [[URL]]()
+            var failure: Error?
+            for urls in sets {
+                do {
+                    current = try session.addDrone(urls, to: current, log: { line in
+                        Task { @MainActor in self?.message = line }
+                    }, cancelled: { cancel.isSet })
+                    added.append(urls)
+                } catch {
+                    failure = error
+                    break
+                }
+            }
+            let result = current
+            await MainActor.run {
+                guard let self, self.session === session else { return }
+                self.addingDrone = false
+                self.outcome = result
+                self.placements = Dictionary(uniqueKeysWithValues: result.placements.map { ($0.id, $0) })
+                self.starts = result.starts
+                self.droneSources += added
+                self.buildTracks()
+                if let failure {
+                    self.message = failure is SyncCancelled ? "Se dejó de agregar el dron." : "No se pudo agregar el dron: \(failure)"
+                } else if let last = result.drones.last {
+                    self.message = last.summary
+                }
+            }
+        }
+    }
+
+    private func removeDrone(_ track: TrackRow) {
+        guard let session, let outcome, !busy, let index = outcome.drones.firstIndex(where: { "dron|" + $0.name == track.id }) else { return }
+        // The ones after it are numbered again ("DRON 2" becomes "DRON 1"): added again in order.
+        var kept = outcome
+        for d in outcome.drones { kept = session.removeDrone(d.name, from: kept) }
+        var sources = droneSources
+        if index < sources.count { sources.remove(at: index) }
+        self.outcome = kept
+        placements = Dictionary(uniqueKeysWithValues: kept.placements.map { ($0.id, $0) })
+        starts = kept.starts
+        droneSources = []
+        buildTracks()
+        if !sources.isEmpty { addDrones(sources) }
     }
 
     // MARK: Export

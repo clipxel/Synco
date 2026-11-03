@@ -50,9 +50,9 @@ public enum SyncQuality {
 
 /// Everything one sync produced, ready to show or export.
 public struct SyncOutcome {
-    public let placements: [Placement]
+    public internal(set) var placements: [Placement]
     /// Timeline frame where each clip's media starts, earliest clip at zero.
-    public let starts: [String: Int]
+    public internal(set) var starts: [String: Int]
     public let checks: [Syncer.Crosscheck]
     /// Same-device clips that ended up overlapping (always a wrong placement).
     public let overlaps: [String]
@@ -66,6 +66,8 @@ public struct SyncOutcome {
     /// Fast mode searches most clips only near their clock: one found there as clearly as a
     /// search of the whole event demands (these z and ratio) counts as exact.
     public var strongNear: (z: Float, ratio: Float)? = nil
+    /// Drones added after the sync, each a track of its own (see `SyncSession.addDrone`).
+    public internal(set) var drones: [DroneGroup] = []
 
     public var synced: Int { placements.filter { $0.method.synced }.count }
 
@@ -79,6 +81,8 @@ public struct SyncOutcome {
             if confirmed.contains(p.id) { return .exact }
             if let s = strongNear, p.z >= s.z, p.ratio >= s.ratio { return .exact }
             return .approximate
+        case .light: return .exact
+        case .lightClock: return .approximate
         case .clock, .unplaced: return .guessed
         }
     }
@@ -297,6 +301,7 @@ public final class SyncSession {
                 if options.disableUnsynced { disabled.insert(p.id) }
             }
         }
+        project.setDroneTracks(outcome.drones, starts: outcome.starts, labels: labels, disabled: disabled)
         project.apply(starts: outcome.starts, labels: labels, disabled: disabled)
         project.rename(project.sequenceName + options.sequenceSuffix)
         try project.write(to: url)
@@ -307,8 +312,9 @@ public final class SyncSession {
 
     public func report(_ outcome: SyncOutcome) -> String {
         let result = outcome.placements, checks = outcome.checks
-        let byID = Dictionary(uniqueKeysWithValues: project.clips.map { ($0.fileID, $0) })
-        let count = result.count
+        let byID = Dictionary(uniqueKeysWithValues: (project.clips + outcome.drones.flatMap(\.clips)).map { ($0.fileID, $0) })
+        // The audio sync's count: drones, added after it by their light, are counted apart.
+        let count = result.count - outcome.drones.reduce(0) { $0 + $1.clips.count }
         let methods = Dictionary(grouping: result, by: \.method)
         let fps = Double(project.fps)
         let agreed = checks.filter { ($0.error.map { abs($0) * fps <= 1 }) ?? false }.count
@@ -324,6 +330,11 @@ public final class SyncSession {
         md += "- rojo (sin audio en común: ubicado por fecha, hora y vecinos): \(q[.guessed]?.count ?? 0)\n\n"
         for m in [SyncMethod.reference, .audio, .audioNear, .clock, .unplaced] {
             md += "- \(m.rawValue): \(methods[m]?.count ?? 0)\n"
+        }
+        if !outcome.drones.isEmpty {
+            md += "\n## Drones\n\n"
+            md += "Agregados después de sincronizar: por la hora de cada toma y por las luces que vieron a la vez que las cámaras.\n\n"
+            for d in outcome.drones { md += "- \(d.summary)\n" }
         }
         md += "\n## Verificación cruzada\n\n"
         md += "Pares de clips de dispositivos distintos que quedaron superpuestos, comparados entre sí directamente: "

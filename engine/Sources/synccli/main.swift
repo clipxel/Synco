@@ -87,6 +87,44 @@ case "sync" where args.count >= 4:
                  agreed, outcome.checks.count, outcome.overlaps.count))
     print("XML: \(output.path)\ninforme: \(reportURL.path)")
 
+case "dron" where args.count >= 5:
+    // Syncs a project and then adds a drone (or any camera with no sound) by its time and light.
+    let input = URL(fileURLWithPath: args[2])
+    let output = URL(fileURLWithPath: args[3])
+    let project = try FCP7Project(url: input)
+    let session = SyncSession(project: project, cache: cache, rate: rate)
+    try session.readAudio()
+    var options = SyncOptions()
+    options.workers = max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
+    var outcome = try session.sync(options: options) { _ in }
+    print(String(format: "audio: %d/%d sincronizados", outcome.synced, outcome.placements.count))
+    let t0 = Date()
+    outcome = try session.addDrone(args[4...].map { URL(fileURLWithPath: $0) }, to: outcome) { print($0) }
+    print(String(format: "dron: %.0f s", Date().timeIntervalSince(t0)))
+    var export = ExportOptions()
+    export.sequenceSuffix = ""
+    export.writeReport = false
+    try session.export(outcome, to: output, options: export)
+    try session.report(outcome).write(to: output.deletingPathExtension().appendingPathExtension("md"), atomically: true, encoding: .utf8)
+    for d in outcome.drones {
+        for c in d.clips {
+            let p = outcome.placements.first { $0.id == c.fileID }!
+            print(String(format: "  %@  %@  cuadro %d  %@%@", c.name, p.method.rawValue, outcome.starts[c.fileID] ?? -1,
+                         p.z > 0 ? String(format: "z %.1f ", p.z) : "", p.clockError.map { String(format: "(%+.0f ms de su reloj)", $0 * 1000) } ?? ""))
+        }
+    }
+    print("XML: \(output.path)")
+
+case "srt":
+    // A drone video's time: from its .SRT (to the millisecond), and the file's.
+    let f = DateFormatter()
+    f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+    for path in args[2...] {
+        let url = URL(fileURLWithPath: path)
+        print("\(url.lastPathComponent)  srt \(Drone.srtStart(for: url).map(f.string) ?? "-")  archivo \(recordingStart(url: url).map(f.string) ?? "-")"
+              + (Drone.isPhone(url) ? "  (teléfono)" : ""))
+    }
+
 case "compare":
     // The global search whole and in blocks, side by side, for every clip.
     let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))
@@ -155,6 +193,16 @@ case "bench":
     let m = c.match(clip, lags: (-clip.count + 16000)...(ref.count - 16000))
     print(String(format: "%.0f min contra %.1f h: %.1f s (encontrado en %.1f s, real %.1f s; z %.0f)",
                  minutes, hours, Date().timeIntervalSince(t0), (m?.lag ?? 0) / rate, Double(at) / rate, m?.z ?? 0))
+
+case "luz":
+    // A video's brightness frame by frame, and how long reading it took.
+    for path in args[2...] {
+        let t0 = Date()
+        let light = try readLight(url: URL(fileURLWithPath: path))
+        let span = (light.times.last ?? 0) - (light.times.first ?? 0)
+        print(String(format: "%@: %d cuadros (%.1f s de video) en %.1f s, brillo %.0f–%.0f", (path as NSString).lastPathComponent,
+                     light.luma.count, span, Date().timeIntervalSince(t0), light.luma.min() ?? 0, light.luma.max() ?? 0))
+    }
 
 case "times":
     let project = try FCP7Project(url: URL(fileURLWithPath: args[2]))

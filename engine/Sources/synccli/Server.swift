@@ -67,6 +67,8 @@ final class Server {
         case "relink": return try relink(msg["folder"] as? String ?? "")
         case "drop": return try drop(msg["paths"] as? [String] ?? [], track: msg["track"] as? String)
         case "removeTrack": return try removeTrack(msg["track"] as? String ?? "")
+        case "addDrone": return try addDrone(msg["paths"] as? [String] ?? [])
+        case "removeDrone": return try removeDrone(msg["name"] as? String ?? "")
         case "cacheSize": return ["bytes": cacheSize()]
         case "clearCache": clearCache(days: msg["days"] as? Int); return ["bytes": cacheSize()]
         case "checkUpdate": return try checkUpdate(msg)
@@ -92,6 +94,7 @@ final class Server {
         }
         session = SyncSession(project: project, cache: cache, rate: rate)
         outcome = nil
+        droneSources = []
         fileURL = url
         return describe(project, path: path)
     }
@@ -230,8 +233,45 @@ final class Server {
         let flag = cancel
         options.isCancelled = { flag.isSet }
         let ignoring = Set(msg["ignoring"] as? [String] ?? [])
-        let result = try session.sync(options: options, ignoring: ignoring) { line in self.send(["event": "log", "line": line]) }
+        var result = try session.sync(options: options, ignoring: ignoring) { line in self.send(["event": "log", "line": line]) }
+        // The drones added before go back in, on top of the new sync.
+        for urls in droneSources {
+            result = try session.addDrone(urls, to: result, log: { line in self.send(["event": "log", "line": line]) }, cancelled: { flag.isSet })
+        }
         outcome = result
+        return describe(result, session)
+    }
+
+    /// The drones added after the sync, to add again after the next one.
+    private var droneSources = [[URL]]()
+
+    /// The extra step once synced: a drone's videos (or any camera with no sound), by their time and light.
+    private func addDrone(_ paths: [String]) throws -> [String: Any] {
+        guard let session, let current = outcome else { throw ServerError("primero hay que sincronizar") }
+        cancel.set(false)
+        let flag = cancel
+        let urls = paths.map { URL(fileURLWithPath: $0) }
+        let result = try session.addDrone(urls, to: current, log: { line in self.send(["event": "log", "line": line]) }, cancelled: { flag.isSet })
+        outcome = result
+        droneSources.append(urls)
+        return describe(result, session)
+    }
+
+    private func removeDrone(_ name: String) throws -> [String: Any] {
+        guard let session, let current = outcome, let index = current.drones.firstIndex(where: { $0.name == name }) else {
+            throw ServerError("no hay ese dron")
+        }
+        // The ones after it are numbered again ("DRON 2" becomes "DRON 1"): added again in order.
+        var result = current
+        for d in current.drones { result = session.removeDrone(d.name, from: result) }
+        if index < droneSources.count { droneSources.remove(at: index) }
+        let flag = cancel
+        for urls in droneSources { result = try session.addDrone(urls, to: result, cancelled: { flag.isSet }) }
+        outcome = result
+        return describe(result, session)
+    }
+
+    private func describe(_ result: SyncOutcome, _ session: SyncSession) -> [String: Any] {
         let quality: (Placement) -> String = {
             switch result.quality($0) { case .exact: return "exact"; case .approximate: return "approximate"; case .guessed: return "guessed" }
         }
@@ -252,6 +292,13 @@ final class Server {
             "overlaps": result.overlaps.count,
             "report": session.report(result),
             "warnings": result.warnings,
+            "drones": result.drones.map { d -> [String: Any] in
+                ["name": d.name, "folder": d.folder, "summary": d.summary,
+                 "clips": d.clips.map { c -> [String: Any] in
+                     ["id": c.fileID, "name": c.name, "track": d.name, "device": c.device, "deviceName": d.name,
+                      "folder": d.folder, "folderPath": c.folder, "path": c.url.path, "hasVideo": true, "frames": c.frames, "exists": c.exists]
+                 }]
+            },
         ]
     }
 

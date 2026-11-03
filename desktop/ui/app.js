@@ -28,9 +28,11 @@ const S = {
   project: null, path: null, tracks: [], peaks: {}, durations: {}, problems: {},
   placements: {}, starts: null, report: "", ignored: new Set(), selected: null,
   readDone: 0, readTotal: 0,
+  drones: [], addingDrone: false,   // drones added after the sync (the extra step)
 };
-const busy = () => S.phase === "reading" || S.phase === "matching";
-const clipById = (id) => S.project?.clips.find((c) => c.id === id);
+const busy = () => S.phase === "reading" || S.phase === "matching" || S.addingDrone;
+const droneClips = () => (S.drones || []).flatMap((d) => d.clips);
+const clipById = (id) => S.project?.clips.find((c) => c.id === id) || droneClips().find((c) => c.id === id);
 const duration = (c) => S.durations[c.id] ?? c.frames / (S.project?.fps || 25);
 const quality = (id) => S.placements[id]?.quality;
 
@@ -67,7 +69,7 @@ async function open(path) {
 function loaded(project) {
   S.opening = null;
   const path = project.path;
-  Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null });
+  Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null, drones: [] });
   buildTracks();
   prefs.recents = [path, ...prefs.recents.filter((p) => p !== path)].slice(0, 8);
   savePrefs();
@@ -162,11 +164,14 @@ function buildTracks() {
     return { id: device, kind: video ? "camera" : "recorder", name, folder: `${clips[0].track} · ${clips[0].deviceName || clips[0].folder}`,
       deviceName: clips[0].deviceName, clips };
   });
-  S.tracks = [...rows.filter((r) => r.kind === "camera"), ...rows.filter((r) => r.kind === "recorder")];
+  // Drones on top, then cameras, recorders at the bottom, like an editor's timeline.
+  const drones = (S.drones || []).map((d) => ({ id: "dron|" + d.name, kind: "drone", name: d.name, folder: `por imagen · ${d.folder}`,
+    deviceName: d.name, clips: d.clips }));
+  S.tracks = [...drones, ...rows.filter((r) => r.kind === "camera"), ...rows.filter((r) => r.kind === "recorder")];
 }
 
 B.on("read", (e) => { S.readDone = e.done; S.readTotal = e.total; renderStatus(); });
-B.on("log", (e) => { if (S.phase === "matching") message(e.line.charAt(0).toUpperCase() + e.line.slice(1)); });
+B.on("log", (e) => { if (S.phase === "matching" || S.addingDrone) message(e.line.charAt(0).toUpperCase() + e.line.slice(1)); });
 // The slow search runs on its own after reading; while the project just sits there, say how it goes.
 B.on("ahead", (e) => {
   if (S.phase !== "ready") return;
@@ -209,11 +214,10 @@ async function synchronize() {
   render();
   try {
     const r = await B.send("sync", { options: prefs.sync, ignoring: [...S.ignored] });
-    S.placements = Object.fromEntries(r.placements.map((p) => [p.id, p]));
-    S.starts = r.starts;
-    S.report = r.report;
+    applyOutcome(r);
     S.phase = "done";
-    let m = `${r.synced} de ${r.placements.length} clips sincronizados por audio en ${Math.round(r.seconds)} s. Verificación: ${r.agreed} de ${r.checks} pares a 1 cuadro o menos.`;
+    const audioClips = r.placements.length - droneClips().length;
+    let m = `${r.synced} de ${audioClips} clips sincronizados por audio en ${Math.round(r.seconds)} s. Verificación: ${r.agreed} de ${r.checks} pares a 1 cuadro o menos.`;
     if (r.overlaps) m += ` ${r.overlaps} solape(s) a revisar.`;
     if (r.warnings?.length) m = "⚠️ " + r.warnings[0] + " · " + m;
     message(m);
@@ -227,6 +231,45 @@ async function synchronize() {
 }
 
 function stop() { B.send("cancel"); }
+
+/** What the engine returns after a sync or a drone: every clip's place, and the drone tracks. */
+function applyOutcome(r) {
+  S.placements = Object.fromEntries(r.placements.map((p) => [p.id, p]));
+  S.starts = r.starts;
+  S.report = r.report;
+  S.drones = r.drones || [];
+  buildTracks();
+}
+
+// MARK: Drones
+
+/** The extra step once synced: a drone's videos (or any camera with no sound), placed by their
+ *  time and the light they saw with the cameras. */
+async function addDrone(paths) {
+  if (S.phase !== "done" || busy()) return;
+  paths = paths || (await B.chooseFolders());
+  if (!paths.length) return;
+  S.addingDrone = true;
+  message("Agregando el dron: leyendo la luz de sus tomas…");
+  render();
+  try {
+    const r = await B.send("addDrone", { paths });
+    applyOutcome(r);
+    const last = S.drones[S.drones.length - 1];
+    message(last ? last.summary : "Listo.");
+  } catch (e) {
+    message(/detenida/.test(e.message) ? "Se dejó de agregar el dron." : `No se pudo agregar el dron: ${e.message}`, !/detenida/.test(e.message));
+  } finally { S.addingDrone = false; render(); }
+}
+
+async function removeDrone(track) {
+  if (busy()) return;
+  S.addingDrone = true;
+  render();
+  try { applyOutcome(await B.send("removeDrone", { name: track.deviceName })); }
+  catch (e) { message(e.message, true); }
+  finally { S.addingDrone = false; render(); }
+}
 
 function beep() {
   try {
@@ -291,7 +334,8 @@ function render() {
   setCounter("c-cams", S.tracks.filter((t) => t.kind === "camera").length);
   setCounter("c-recs", S.tracks.filter((t) => t.kind === "recorder").length);
   setCounter("c-clips", p ? p.clips.length : 0);
-  const q = (k) => Object.values(S.placements).filter((x) => x.quality === k).length;
+  const drones = new Set(droneClips().map((c) => c.id));
+  const q = (k) => Object.values(S.placements).filter((x) => !drones.has(x.id) && x.quality === k).length;
   setCounter("c-exact", q("exact"), colors.exact);
   setCounter("c-approx", q("approximate"), colors.approximate);
   setCounter("c-guessed", S.phase === "done" ? q("guessed") : p ? p.clips.length - q("exact") - q("approximate") : 0, S.phase === "done" ? colors.guessed : null);
@@ -303,6 +347,8 @@ function render() {
   syncBtn.querySelector("span").textContent = busy() ? "Detener" : "Sincronizar";
   syncBtn.classList.toggle("primary", has && !busy() && S.phase !== "done");
   for (const b of $("speed").querySelectorAll("button")) { b.classList.toggle("on", b.dataset.speed === prefs.sync.speed); b.disabled = busy(); }
+  $("drone").hidden = S.phase !== "done";
+  $("drone").disabled = busy();
   $("export").disabled = S.phase !== "done";
   $("export").classList.toggle("primary", S.phase === "done");
   $("report").hidden = S.phase !== "done";
@@ -367,8 +413,11 @@ function renderHeads() {
     const d = document.createElement("div");
     d.className = "head"; d.style.height = view.rowH + "px";
     d.title = `${t.clips.length} clips en ${t.clips[0].folderPath}`;
-    d.innerHTML = `<div>${t.kind === "camera" ? "🎥" : "🎙"}</div><b></b><span></span>`;
-    if (S.project.built) {
+    d.innerHTML = `<div>${t.kind === "drone" ? "✈" : t.kind === "camera" ? "🎥" : "🎙"}</div><b></b><span></span>`;
+    if (t.kind === "drone") {
+      d.title += " · clic derecho: quitar este dron";
+      d.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`¿Quitar ${t.name}? Los archivos no se tocan.`)) removeDrone(t); };
+    } else if (S.project.built) {
       d.title += " · clic derecho: quitar esta pista";
       d.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`¿Quitar la pista ${t.name} (${t.deviceName})? Los archivos no se tocan.`)) removeTrack(t); };
     }
@@ -473,6 +522,8 @@ function methodText(p) {
     case "audio": return `por audio · z ${p.z.toFixed(1)}`;
     case "audioNear": return `${p.note === "entre sus vecinos" ? "por audio, entre sus vecinos" : "por audio, cerca de su hora"} · z ${p.z.toFixed(1)}`;
     case "clock": return p.note.includes("orden") ? "sin audio en común: entre sus vecinos, por fecha y hora" : "sin audio en común: por la hora del archivo";
+    case "light": return `por las luces, contra las cámaras · z ${p.z.toFixed(1)}`;
+    case "lightClock": return "por su hora, con el reloj del dron corregido por las luces";
     default: return "sin ubicar: al final";
   }
 }
@@ -785,6 +836,7 @@ $("open").onclick = chooseFile;
 $("open-empty").onclick = chooseFile;
 $("sync").onclick = () => (busy() ? stop() : synchronize());
 $("export").onclick = () => exportXML();
+$("drone").onclick = () => addDrone();
 $("sync-settings").onclick = showSyncSettings;
 for (const b of $("speed").querySelectorAll("button")) b.onclick = () => { prefs.sync.speed = b.dataset.speed; savePrefs(); render(); };
 $("export-settings").onclick = showExportSettings;

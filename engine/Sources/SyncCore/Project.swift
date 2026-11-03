@@ -196,8 +196,14 @@ public final class FCP7Project {
         }
         let original = ["video": tracks("video"), "audio": tracks("audio")]
         var freeAt = [ObjectIdentifier: Int]()          // per track: the frame where it is free again
-        var extra = ["video": [XMLElement](), "audio": [XMLElement]()]
+        // Extra tracks in sets, one track per kind of home track: a stereo pair's left and right
+        // stay side by side in the same set, so Premiere still reads them as one stereo track.
+        var extra = [[String: XMLElement]]()
         func free(_ t: XMLElement, _ start: Int) -> Bool { (freeAt[ObjectIdentifier(t)] ?? Int.min) <= start }
+        func key(_ kind: String, _ home: XMLElement) -> String {
+            kind + "|" + ["premiereTrackType", "currentExplodedTrackIndex", "totalExplodedTrackCount"]
+                .map { home.attribute(forName: $0)?.stringValue ?? "" }.joined(separator: "|")
+        }
 
         let ordered = clips.filter { !$0.items.isEmpty }.sorted { (int($0.items[0], "start") ?? 0) < (int($1.items[0], "start") ?? 0) }
         for clip in ordered {
@@ -211,18 +217,27 @@ public final class FCP7Project {
                 for p in parts { freeAt[ObjectIdentifier(p.home)] = p.end }
                 continue
             }
-            // Otherwise each part on the first extra track of its kind that is free (a new one if none).
-            var used = Set<ObjectIdentifier>()
-            for p in parts {
-                let target = extra[p.kind]!.first { !used.contains(ObjectIdentifier($0)) && free($0, p.start) } ?? {
+            // Otherwise the first set of extra tracks where every part fits (a new set if none).
+            // Two parts on tracks of one kind (an editor's plain mono pair): first and second of it.
+            var seen = [String: Int]()
+            let keys = parts.map { p -> String in
+                let k = key(p.kind, p.home)
+                seen[k, default: 0] += 1
+                return k + "#\(seen[k]!)"
+            }
+            let n = extra.firstIndex { set in zip(parts, keys).allSatisfy { p, k in set[k].map { free($0, p.start) } ?? true } } ?? extra.count
+            if n == extra.count { extra.append([:]) }
+            // In channel order, so a new left track is added before its right one.
+            let sortedParts = zip(parts, keys).sorted { $0.1 < $1.1 }
+            for (p, k) in sortedParts {
+                let target = extra[n][k] ?? {
                     // A copy of the part's own track (its settings, audio channel) without clips.
                     let t = p.home.copy() as! XMLElement
                     for child in t.elements(forName: "clipitem") + t.elements(forName: "transitionitem") { child.detach() }
                     (p.home.parent as? XMLElement)?.addChild(t)
-                    extra[p.kind]!.append(t)
+                    extra[n][k] = t
                     return t
                 }()
-                used.insert(ObjectIdentifier(target))
                 p.item.detach()
                 target.addChild(p.item)
                 freeAt[ObjectIdentifier(target)] = p.end
