@@ -12,7 +12,7 @@ struct SyncoApp: App {
             MainView()
                 .environmentObject(model)
                 .environmentObject(updater)
-                .frame(minWidth: 1100, minHeight: 640)
+                .frame(minWidth: 860, minHeight: 560)
                 .preferredColorScheme(.dark)
                 .onAppear {
                     delegate.model = model
@@ -26,6 +26,7 @@ struct SyncoApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1320, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Buscar actualizaciones…") { updater.check(quiet: false) }
@@ -96,6 +97,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Run as a regular app with a Dock icon even when launched from the command line.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // A smaller screen than the one it was last used on: the window fits on it, whole.
+        DispatchQueue.main.async { Self.fitOnScreen() }
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
+            Self.fitOnScreen()
+        }
+    }
+
+    static func fitOnScreen() {
+        for window in NSApp.windows where window.isVisible && window.styleMask.contains(.resizable) {
+            guard let screen = window.screen ?? NSScreen.main else { continue }
+            let room = screen.visibleFrame
+            var frame = window.frame
+            frame.size.width = min(frame.width, room.width)
+            frame.size.height = min(frame.height, room.height)
+            frame.origin.x = min(max(frame.minX, room.minX), room.maxX - frame.width)
+            frame.origin.y = min(max(frame.minY, room.minY), room.maxY - frame.height)
+            if frame != window.frame { window.setFrame(frame, display: true) }
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

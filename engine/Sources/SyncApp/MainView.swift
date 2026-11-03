@@ -7,6 +7,12 @@ struct MainView: View {
     @EnvironmentObject var updater: Updater
 
     var body: some View {
+        GeometryReader { geo in
+            content.environment(\.room, Room(width: geo.size.width))
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 0) {
             HeaderBar()
             ActionBar()
@@ -59,25 +65,30 @@ func loadURLs(_ providers: [NSItemProvider], _ done: @escaping @MainActor ([URL]
 
 struct HeaderBar: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.room) private var room
 
     var body: some View {
         HStack(spacing: Theme.Size.space3) {
             BrandMark()
             Rectangle().fill(Theme.border).frame(width: 1, height: 18)
             if let url = model.fileURL, let project = model.project {
-                Text(url.lastPathComponent).font(Theme.Font.lg).lineLimit(1).truncationMode(.middle)
-                Image(systemName: "chevron.right").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
-                Text(project.sequenceName).font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1)
-                Text(formatLength(model.totalDuration)).font(Theme.Font.base).foregroundStyle(Theme.textMuted)
-                Text("\(formatRate(project.fps)) cps").font(Theme.Font.base).foregroundStyle(Theme.textMuted)
-                PhaseBadge()
+                Text(url.lastPathComponent).font(Theme.Font.lg).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                if room > .tight {
+                    Image(systemName: "chevron.right").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
+                    Text(project.sequenceName).font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.tail)
+                }
+                Text(formatLength(model.totalDuration)).font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1).fixedSize()
+                if room == .roomy {
+                    Text("\(formatRate(project.fps)) cps").font(Theme.Font.base).foregroundStyle(Theme.textMuted).fixedSize()
+                }
+                PhaseBadge().fixedSize()
             } else {
-                Text("sincroniza cámaras y grabadores por el audio").font(Theme.Font.base).foregroundStyle(Theme.textMuted)
+                Text("sincroniza cámaras y grabadores por el audio").font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: Theme.Size.space3)
+            SupportButtons().fixedSize()
         }
         .padding(.leading, 80) // room for the window buttons
-        .overlay(alignment: .trailing) { SupportButtons().padding(.trailing, Theme.Size.space4) }
         .padding(.trailing, Theme.Size.space4)
         .frame(height: 38)
         .background(Theme.surface)
@@ -110,10 +121,15 @@ struct PhaseBadge: View {
 
 /// Donate and Instagram, top right.
 struct SupportButtons: View {
+    @Environment(\.room) private var room
+
     var body: some View {
         HStack(spacing: Theme.Size.space2) {
             Button { Contact.open(Contact.instagram) } label: {
-                Label(Contact.handle, systemImage: "camera").font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
+                Group {
+                    if room == .roomy { Label(Contact.handle, systemImage: "camera") } else { Image(systemName: "camera") }
+                }
+                .font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
             }
             .buttonStyle(.plain)
             .help("Instagram: novedades, dudas y pedidos")
@@ -156,9 +172,10 @@ struct BrandMark: View {
 
 struct ActionBar: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.room) private var room
 
     var body: some View {
-        HStack(spacing: Theme.Size.space3) {
+        HStack(spacing: room == .tight ? Theme.Size.space1 : Theme.Size.space3) {
             HStack(spacing: Theme.Size.space1) {
                 ActionButton(title: "Abrir XML", systemImage: "square.and.arrow.down", primary: model.project == nil) {
                     model.chooseFile()
@@ -170,9 +187,12 @@ struct ActionBar: View {
                 .disabled(model.phase == .matching || model.addingDrone)
             }
             Chevron()
-            Counter(value: model.cameras, label: "cámaras")
-            Counter(value: model.recorders, label: "grabadores")
-            Counter(value: model.clipCount, label: "clips")
+            // With little room, the tracks themselves say how many there are.
+            if room > .tight {
+                Counter(value: model.cameras, label: "cámaras")
+                Counter(value: model.recorders, label: "grabadores")
+                Counter(value: model.clipCount, label: "clips")
+            }
             Chevron()
             HStack(spacing: Theme.Size.space1) {
                 IconButton(systemImage: "gearshape", help: "Ajustes de sincronización") { model.showSyncSettings = true }
@@ -182,7 +202,7 @@ struct ActionBar: View {
                     ActionButton(title: "Detener", systemImage: "stop.fill", primary: false) { model.stopByUser() }
                 } else {
                     ActionButton(title: "Sincronizar",
-                                 systemImage: "waveform.path", primary: model.project != nil && model.phase != .done) {
+                                 systemImage: "waveform.path", primary: model.project != nil && model.phase != .done, keepTitle: true) {
                         model.synchronize()
                     }
                     .disabled(!model.canSync)
@@ -197,7 +217,7 @@ struct ActionBar: View {
             Counter(value: model.phase == .done ? model.count(.guessed) : model.remainingCount, label: "sin encontrar", large: true,
                     tint: model.phase == .done ? Theme.clipGuessed : nil)
                 .help("Sin audio en común: ubicados por fecha, hora y vecinos")
-            Spacer()
+            Spacer(minLength: 0)
             HStack(spacing: Theme.Size.space1) {
                 if model.phase == .done {
                     // The extra step, once synced: drones and cameras with no sound, by their time and light.
@@ -206,7 +226,7 @@ struct ActionBar: View {
                         .help("Tomas sin sonido (un dron): se ubican por su hora y por las luces que vieron a la vez que las cámaras")
                 }
                 IconButton(systemImage: "gearshape", help: "Ajustes de exportación") { model.showExportSettings = true }
-                ActionButton(title: "Exportar", systemImage: "square.and.arrow.up", primary: model.phase == .done) {
+                ActionButton(title: "Exportar", systemImage: "square.and.arrow.up", primary: model.phase == .done, keepTitle: true) {
                     model.export()
                 }
                 .disabled(model.phase != .done)
@@ -221,14 +241,17 @@ struct ActionBar: View {
 /// Rápido, Normal or Máximo, next to Sincronizar.
 struct SpeedPicker: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.room) private var room
 
     var body: some View {
-        Picker("Velocidad", selection: $model.prefs.sync.speed) {
+        let picker = Picker("Velocidad", selection: $model.prefs.sync.speed) {
             Text("Rápido").tag(Speed.fast)
             Text("Normal").tag(Speed.normal)
             Text("Máximo").tag(Speed.thorough)
         }
-        .pickerStyle(.segmented)
+        Group {
+            if room == .roomy { picker.pickerStyle(.segmented) } else { picker.pickerStyle(.menu) }
+        }
         .labelsHidden()
         .fixedSize()
         .help("""
@@ -297,6 +320,7 @@ extension AppModel.Phase {
 
 struct ClipInspector: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.room) private var room
 
     var body: some View {
         HStack(spacing: Theme.Size.space3) {
@@ -337,19 +361,23 @@ struct ClipInspector: View {
                     .keyboardShortcut(.delete, modifiers: [])
                     .help("Quitar este clip del proyecto (el archivo no se borra)")
                     .disabled(!model.canEdit)
-                Button(model.ignored.contains(id) ? "Deshacer corrección" : "Está mal: ubicarlo por su hora") {
+                Button(model.ignored.contains(id) ? "Deshacer corrección" : room == .roomy ? "Está mal: ubicarlo por su hora" : "Está mal") {
                     model.toggleIgnored(id)
                 }
                 .help("Deja de usar el audio de este clip y lo ubica por la hora del archivo. Se aplica al volver a sincronizar.")
                 .disabled(model.busy)
-                Button("Mostrar en Finder") { NSWorkspace.shared.activateFileViewerSelecting([clip.url]) }
-                    .disabled(!clip.exists)
+                Button { NSWorkspace.shared.activateFileViewerSelecting([clip.url]) } label: {
+                    if room == .roomy { Text("Mostrar en Finder") } else { Image(systemName: "folder") }
+                }
+                .help("Mostrar en Finder")
+                .disabled(!clip.exists)
             } else {
                 Text("Hacé clic en un clip para ver cómo se ubicó, y con el botón derecho para lo que podés hacer con él. Arrastralo arriba o abajo para pasarlo a otra pista.")
                     .font(Theme.Font.sm).foregroundStyle(Theme.textMuted)
                 Spacer()
             }
         }
+        .lineLimit(1)
         .padding(.horizontal, Theme.Size.space4)
         .frame(height: 40)
         .background(Theme.surface)

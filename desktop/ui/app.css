@@ -188,3 +188,17 @@ body.dropping .empty { outline: 2px dashed var(--accent); outline-offset: -16px;
 .ruler { display: flex; height: 22px; background: var(--surface); }
 .ruler i { width: 96px; flex: none; }
 .ruler canvas { flex: 1; min-width: 0; height: 22px; cursor: col-resize; }
+
+/* Smaller windows: words go before anything gets cut */
+#title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.counter span { white-space: nowrap; }
+@media (max-width: 1320px) {
+  #open .label, #drone .label, #instagram .label, .chev { display: none; }
+  .actions { gap: 8px; }
+  .counter { min-width: 44px; }
+}
+@media (max-width: 1040px) {
+  #c-cams, #c-recs, #c-clips { display: none; }
+  .segmented button { padding-left: 6px; padding-right: 6px; }
+  .actions { gap: 4px; padding-left: 10px; padding-right: 10px; }
+}

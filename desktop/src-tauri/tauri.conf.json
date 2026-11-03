@@ -12,8 +12,8 @@
         "title": "Synco",
         "width": 1320,
         "height": 820,
-        "minWidth": 1100,
-        "minHeight": 640,
+        "minWidth": 860,
+        "minHeight": 560,
         "dragDropEnabled": true,
         "backgroundColor": "#121417"
       }

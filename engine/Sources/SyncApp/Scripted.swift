@@ -24,6 +24,11 @@ enum Scripted {
             let saved = model.prefs
             if args.contains("--disable-unsynced") { model.prefs.export.disableUnsynced = true }
             try? await Task.sleep(nanoseconds: 500_000_000)
+            // --window 900x600: the window at that size, as on a small screen.
+            if let size = value("--window")?.split(separator: "x").compactMap({ Double($0) }), size.count == 2,
+               let w = NSApp.windows.first(where: { $0.isVisible }) {
+                w.setContentSize(NSSize(width: size[0], height: size[1]))
+            }
             let t0 = Date()
             if let path = value("--open") {
                 model.open(URL(fileURLWithPath: path))
