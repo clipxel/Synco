@@ -167,7 +167,7 @@ struct ActionBar: View {
                 IconButton(systemImage: "folder.badge.plus", help: "Armar el proyecto desde las carpetas de tus cámaras y grabadores") {
                     model.chooseFolders()
                 }
-                .disabled(model.busy)
+                .disabled(model.phase == .matching || model.addingDrone)
             }
             Chevron()
             Counter(value: model.cameras, label: "cámaras")
@@ -177,15 +177,16 @@ struct ActionBar: View {
             HStack(spacing: Theme.Size.space1) {
                 IconButton(systemImage: "gearshape", help: "Ajustes de sincronización") { model.showSyncSettings = true }
                 SpeedPicker()
-                    .disabled(model.busy)
-                if model.busy {
-                    ActionButton(title: "Detener", systemImage: "stop.fill", primary: false) { model.stop() }
+                    .disabled(model.busy && model.phase != .reading)
+                if model.busy && !model.canSync {
+                    ActionButton(title: "Detener", systemImage: "stop.fill", primary: false) { model.stopByUser() }
                 } else {
                     ActionButton(title: "Sincronizar",
                                  systemImage: "waveform.path", primary: model.project != nil && model.phase != .done) {
                         model.synchronize()
                     }
-                    .disabled(model.project == nil)
+                    .disabled(!model.canSync)
+                    .help(model.phase == .reading ? "Empieza apenas termine de leer el audio" : "")
                 }
             }
             Chevron()

@@ -63,8 +63,8 @@ struct SyncoApp: App {
             CommandMenu("Sincronización") {
                 Button("Sincronizar") { model.synchronize() }
                     .keyboardShortcut("r")
-                    .disabled(model.project == nil || model.busy)
-                Button("Detener") { model.stop() }
+                    .disabled(!model.canSync)
+                Button("Detener") { model.stopByUser() }
                     .keyboardShortcut(".")
                     .disabled(!model.busy)
                 Divider()

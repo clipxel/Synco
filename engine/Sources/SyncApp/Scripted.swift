@@ -28,6 +28,13 @@ enum Scripted {
             if let path = value("--open") {
                 model.open(URL(fileURLWithPath: path))
                 print("synco: abriendo, fase \(model.phase)")
+                // --sync-early: Sincronizar pressed while it still opens and reads, as a hurried user does.
+                if args.contains("--sync-early") {
+                    model.synchronize()
+                    print("synco: sincronizar apretado al abrir, espera la lectura: \(model.syncWhenRead)")
+                    await waitWhile { model.busy }
+                    print("synco: fase \(model.phase) · \(model.message)")
+                }
                 await waitWhile { model.phase == .reading }
                 print(String(format: "synco: abierto y audio leído en %.1f s", Date().timeIntervalSince(t0)))
                 print("synco: fase \(model.phase) · faltantes \(model.missing.count) · \(model.message)")

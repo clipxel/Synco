@@ -171,6 +171,12 @@ final class AppModel: ObservableObject {
     // MARK: Derived
 
     var busy: Bool { phase == .reading || phase == .matching || addingDrone }
+    /// Sincronizar pressed while the audio is still being read: the sync starts as soon as it is.
+    @Published var syncWhenRead = false
+    /// Sincronizar can be pressed: with nothing running, or while it reads (it waits for it).
+    var canSync: Bool {
+        phase == .reading ? !syncWhenRead && !addingDrone : project != nil && !busy
+    }
     /// Placing a drone after the sync (the extra step, on its own).
     @Published var addingDrone = false
     /// The drones added, kept to add them again after the next sync.
@@ -274,6 +280,7 @@ final class AppModel: ObservableObject {
     /// Back to the empty timeline.
     func close() {
         stop()
+        syncWhenRead = false
         project = nil
         session = nil
         fileURL = nil
@@ -317,6 +324,7 @@ final class AppModel: ObservableObject {
                             + skipped.prefix(3).map(\.lastPathComponent).joined(separator: ", ") + (skipped.count > 3 ? "…" : ".")
                     }
                 case .failure(let error):
+                    self.syncWhenRead = false
                     self.phase = .failed("\(error)")
                     self.message = "No se pudieron armar las pistas: \(error)"
                 }
@@ -398,6 +406,7 @@ final class AppModel: ObservableObject {
             if !missing.isEmpty { showPathFixer = true }
             readAudio()
         } catch {
+            syncWhenRead = false
             phase = .failed("No se pudo abrir \(url.lastPathComponent): \(error)")
             message = "No se pudo abrir \(url.lastPathComponent). ¿Es un XML de Premiere (Final Cut Pro 7 XML)?"
         }
@@ -447,7 +456,7 @@ final class AppModel: ObservableObject {
         phase = .reading
         readDone = 0
         readTotal = session.project.clips.filter { session.audio[$0.fileID] == nil }.count
-        message = "Leyendo el audio de los archivos…"
+        message = syncWhenRead ? "Sincroniza apenas termine de leer el audio…" : "Leyendo el audio de los archivos…"
         let cancel = self.cancel
         readTask = Task.detached(priority: .userInitiated) { [weak self] in
             do {
@@ -467,7 +476,7 @@ final class AppModel: ObservableObject {
                         : "Listo. \(failed) archivo(s) sin audio legible: se van a ubicar por su hora."
                     if images > 0 { self.message += " \(images) imagen(es) quedan como están: no tienen sonido." }
                     if let notice = self.notice { self.message += " " + notice; self.notice = nil }
-                    if let next { next() } else { self.searchAhead() }
+                    if let next { next() } else if self.syncWhenRead { self.syncWhenRead = false; self.match() } else { self.searchAhead() }
                 }
             } catch {
                 await MainActor.run {
@@ -537,7 +546,14 @@ final class AppModel: ObservableObject {
     }
 
     func synchronize() {
-        guard session != nil, !busy else { return }
+        guard canSync else { return }
+        // Still reading (or opening, or building the tracks): it syncs the moment that is done.
+        if phase == .reading {
+            syncWhenRead = true
+            message = "Sincroniza apenas termine de leer el audio…"
+            return
+        }
+        guard session != nil else { return }
         if phase == .stopped || session!.audio.count + session!.problems.count < clipCount {
             readAudio { [weak self] in self?.match() }
         } else {
@@ -598,6 +614,12 @@ final class AppModel: ObservableObject {
     func stop() {
         cancel.set(true)
         _ = stopSearchAhead()
+    }
+
+    /// Detener: also forgets a sync waiting for the reading.
+    func stopByUser() {
+        syncWhenRead = false
+        stop()
     }
 
     /// Marks a clip as wrongly synced (or undoes it); the next sync places it by its clock.

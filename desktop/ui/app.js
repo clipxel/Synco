@@ -29,8 +29,11 @@ const S = {
   placements: {}, starts: null, report: "", ignored: new Set(), selected: null,
   readDone: 0, readTotal: 0,
   drones: [], addingDrone: false,   // drones added after the sync (the extra step)
+  syncWhenRead: false,              // Sincronizar pressed while reading: it syncs as soon as that is done
 };
 const busy = () => S.phase === "reading" || S.phase === "matching" || S.addingDrone;
+/** Sincronizar can be pressed: with nothing running, or while it reads (it waits for it). */
+const canSync = () => S.phase === "reading" ? !S.syncWhenRead && !S.addingDrone : !!S.project && !busy();
 const droneClips = () => (S.drones || []).flatMap((d) => d.clips);
 const clipById = (id) => S.project?.clips.find((c) => c.id === id) || droneClips().find((c) => c.id === id);
 const duration = (c) => S.durations[c.id] ?? c.frames / (S.project?.fps || 25);
@@ -60,7 +63,7 @@ async function open(path) {
     loaded(await B.send("open", { path }));
     await read();
   } catch (e) {
-    S.phase = "failed"; S.opening = null;
+    S.phase = "failed"; S.opening = null; S.syncWhenRead = false;
     message(`No se pudo abrir ${path.split(/[\\/]/).pop()}. ¿Es un XML de Premiere (Final Cut Pro 7 XML)?`, true);
     render();
   }
@@ -103,6 +106,7 @@ async function drop(paths, track) {
     }
   } catch (e) {
     S.phase = S.project ? "ready" : "empty";
+    S.syncWhenRead = false;
     message(e.message, true);
     render();
   }
@@ -182,7 +186,7 @@ B.on("ahead", (e) => {
 
 async function read() {
   S.phase = "reading"; S.readDone = 0; S.readTotal = S.project.clips.length;
-  message("Leyendo el audio de los archivos…");
+  message(S.syncWhenRead ? "Sincroniza apenas termine de leer el audio…" : "Leyendo el audio de los archivos…");
   render();
   try {
     const r = await B.send("read", { options: prefs.sync });
@@ -194,6 +198,8 @@ async function read() {
     let m = failed ? `Listo. ${failed} archivo(s) sin audio legible: se van a ubicar por su hora.` : "Listo para sincronizar.";
     if (images) m += ` ${images} imagen(es) quedan como están: no tienen sonido.`;
     message(m);
+    // Sincronizar was pressed while it read: now it goes.
+    if (S.syncWhenRead) { S.syncWhenRead = false; setTimeout(synchronize, 0); }
     return true;
   } catch (e) {
     S.phase = "stopped";
@@ -205,7 +211,14 @@ async function read() {
 // MARK: Sync
 
 async function synchronize() {
-  if (!S.project || busy()) return;
+  if (!canSync()) return;
+  // Still opening, building the tracks or reading: it syncs the moment that is done.
+  if (S.phase === "reading") {
+    S.syncWhenRead = true;
+    message("Sincroniza apenas termine de leer el audio…");
+    render();
+    return;
+  }
   if (S.phase === "stopped" || Object.keys(S.durations).length + Object.keys(S.problems).length < S.project.clips.length) {
     if (!(await read())) return;
   }
@@ -230,7 +243,7 @@ async function synchronize() {
   render();
 }
 
-function stop() { B.send("cancel"); }
+function stop() { S.syncWhenRead = false; B.send("cancel"); render(); }
 
 /** What the engine returns after a sync or a drone: every clip's place, and the drone tracks. */
 function applyOutcome(r) {
@@ -343,10 +356,12 @@ function render() {
   $("open").classList.toggle("primary", !has);
   $("open").disabled = busy();
   const syncBtn = $("sync");
-  syncBtn.disabled = !has;
-  syncBtn.querySelector("span").textContent = busy() ? "Detener" : "Sincronizar";
-  syncBtn.classList.toggle("primary", has && !busy() && S.phase !== "done");
-  for (const b of $("speed").querySelectorAll("button")) { b.classList.toggle("on", b.dataset.speed === prefs.sync.speed); b.disabled = busy(); }
+  const stops = busy() && !canSync();
+  syncBtn.disabled = !has && !canSync();
+  syncBtn.querySelector("span").textContent = stops ? "Detener" : "Sincronizar";
+  syncBtn.title = S.phase === "reading" && !stops ? "Empieza apenas termine de leer el audio" : "";
+  syncBtn.classList.toggle("primary", has && !stops && S.phase !== "done");
+  for (const b of $("speed").querySelectorAll("button")) { b.classList.toggle("on", b.dataset.speed === prefs.sync.speed); b.disabled = busy() && S.phase !== "reading"; }
   $("drone").hidden = S.phase !== "done";
   $("drone").disabled = busy();
   $("export").disabled = S.phase !== "done";
@@ -834,7 +849,7 @@ async function installUpdate() {
 
 $("open").onclick = chooseFile;
 $("open-empty").onclick = chooseFile;
-$("sync").onclick = () => (busy() ? stop() : synchronize());
+$("sync").onclick = () => (canSync() ? synchronize() : busy() ? stop() : null);
 $("export").onclick = () => exportXML();
 $("drone").onclick = () => addDrone();
 $("sync-settings").onclick = showSyncSettings;
