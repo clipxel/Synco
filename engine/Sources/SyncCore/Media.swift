@@ -31,6 +31,23 @@ public enum MediaError: Error, CustomStringConvertible {
 }
 
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
+/// MP4 files under a camera's own extension (Insta360's .insv, a DJI drone's .lrf): AVFoundation
+/// only reads them as .mp4, so they are opened through a link with that name, kept in the
+/// temporary folder (one per file, made again if the system cleaned it up).
+public func readableURL(_ url: URL) -> URL {
+    guard ["insv", "lrf"].contains(url.pathExtension.lowercased()) else { return url }
+    var h: UInt64 = 1469598103934665603
+    for b in url.standardizedFileURL.path.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("Synco-links")
+    let link = dir.appendingPathComponent("\(url.deletingPathExtension().lastPathComponent)-\(String(h, radix: 16)).mp4")
+    if (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) != url.path {
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: link)
+        guard (try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)) != nil else { return url }
+    }
+    return link
+}
+
 /// Decodes every audio track of a file, mixed to mono, at `rate` Hz.
 /// AVFoundation only mixes: it decodes at the file's own sample rate, because
 /// its resampler is not exact (at 8 kHz it stretches time by about 50 ppm,
@@ -38,7 +55,7 @@ public enum MediaError: Error, CustomStringConvertible {
 /// here, block by block, so a long file never sits in memory at full rate.
 /// With `from` and `length`, only that stretch of the file (in seconds).
 public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double? = nil) throws -> AudioTrack {
-    let asset = AVURLAsset(url: url)
+    let asset = AVURLAsset(url: readableURL(url))
     let tracks = asset.tracks(withMediaType: .audio)
     guard !tracks.isEmpty else { throw MediaError.noAudio(url) }
     let native = tracks.compactMap { track -> Double? in
@@ -513,7 +530,7 @@ func broadcastStart(url: URL, near fileDate: Date?) -> Date? {
 /// The creation date a camera or phone wrote inside a QuickTime / MP4 file.
 func quickTimeCreation(url: URL) -> Date? {
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
-    let asset = AVURLAsset(url: url)
+    let asset = AVURLAsset(url: readableURL(url))
     guard let date = asset.creationDate?.dateValue,
           date.timeIntervalSince1970 > 946_684_800 else { return nil } // ignore unset clocks (before 2000)
     return date

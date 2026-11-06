@@ -147,7 +147,7 @@ extension AppModel {
         }
         if pictureClip != clip.fileID {
             pictureClip = clip.fileID
-            videoPlayer.replaceCurrentItem(with: AVPlayerItem(url: clip.url))
+            videoPlayer.replaceCurrentItem(with: AVPlayerItem(url: readableURL(clip.url)))
             videoPlayer.isMuted = true
         }
         let now = videoPlayer.currentTime().seconds

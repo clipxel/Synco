@@ -82,7 +82,7 @@ public enum Drone {
     /// both write it inside the file.
     public static func isPhone(_ url: URL) -> Bool {
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
-        let asset = AVURLAsset(url: url)
+        let asset = AVURLAsset(url: readableURL(url))
         for item in asset.metadata {
             let key = (item.key as? String) ?? item.identifier?.rawValue ?? ""
             if key.contains("com.android.version") { return true }

@@ -23,7 +23,7 @@ public struct MediaInfo {
 public func probeMedia(_ url: URL) -> MediaInfo? {
     var info = MediaInfo()
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
-    let asset = AVURLAsset(url: url)
+    let asset = AVURLAsset(url: readableURL(url))
     info.duration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
     if let v = asset.tracks(withMediaType: .video).first {
         let size = v.naturalSize.applying(v.preferredTransform)

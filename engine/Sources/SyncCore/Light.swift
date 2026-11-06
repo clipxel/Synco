@@ -22,16 +22,7 @@ public func readLight(url: URL, from: Double = 0, length: Double? = nil) throws 
     guard FileManager.default.fileExists(atPath: url.path) else { throw MediaError.missing(url) }
     var out = LightTrack()
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
-    // A drone's light copy (.LRF) is an MP4 under another name: opened as one.
-    var source = url
-    if url.pathExtension.lowercased() == "lrf" {
-        let link = FileManager.default.temporaryDirectory.appendingPathComponent("synco-\(UUID().uuidString).mp4")
-        try? FileManager.default.removeItem(at: link)
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: url)
-        source = link
-    }
-    defer { if source != url { try? FileManager.default.removeItem(at: source) } }
-    let asset = AVURLAsset(url: source)
+    let asset = AVURLAsset(url: readableURL(url))
     guard let track = asset.tracks(withMediaType: .video).first else { return out }
     let reader = try AVAssetReader(asset: asset)
     let start = CMTime(seconds: max(0, from), preferredTimescale: 600)
