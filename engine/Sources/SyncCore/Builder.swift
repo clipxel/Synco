@@ -69,8 +69,9 @@ func parseFFmpegInfo(_ text: String) -> MediaInfo {
         if line.contains("Duration:"), let d = first(#"\d+:\d{2}:\d{2}(\.\d+)?"#, in: line) {
             let p = d.split(separator: ":").compactMap { Double($0) }
             if p.count == 3 { info.duration = p[0] * 3600 + p[1] * 60 + p[2] }
-        } else if line.contains("Stream #"), line.contains("Video:"), !info.hasVideo,
-                  !line.contains("attached pic"), !line.contains("mjpeg"), !line.contains("png") {
+        } else if line.contains("Stream #"), line.contains("Video:"), !info.hasVideo, !line.contains("attached pic"),
+                  // An MP3's or M4A's cover is a still picture: a real MJPEG video (an AVI) has a frame rate.
+                  !((line.contains("mjpeg") || line.contains("png")) && !line.contains(" fps")) {
             info.hasVideo = true
             if let s = first(#" \d{2,5}x\d{2,5}"#, in: line) {
                 let wh = s.trimmingCharacters(in: .whitespaces).split(separator: "x").compactMap { Int($0) }

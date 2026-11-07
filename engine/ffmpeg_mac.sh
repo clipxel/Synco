@@ -18,6 +18,7 @@ if [ ! -f "ffmpeg-$VER.tar.xz" ]; then
   mv "ffmpeg-$VER.tar.xz.part" "ffmpeg-$VER.tar.xz"
 fi
 GOT=$(shasum -a 256 "ffmpeg-$VER.tar.xz" | cut -d' ' -f1)
+echo "ffmpeg-$VER.tar.xz sha256 $GOT"
 EXPECTED=$(cat "$OLDPWD/ffmpeg_mac.sha256" 2>/dev/null || true)
 [ -n "$SHA" ] && EXPECTED=$SHA
 if [ -n "$EXPECTED" ] && [ "$GOT" != "$EXPECTED" ]; then echo "ffmpeg-$VER.tar.xz: suma distinta ($GOT)"; exit 1; fi

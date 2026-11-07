@@ -38,7 +38,9 @@ enum FormatTest {
         Format(ext: "dv", label: "DV", video: ["-c:v", "dvvideo", "-pix_fmt", "yuv420p"], audio: ["-c:a", "pcm_s16le"],
                muxer: ["-f", "dv"], size: "720x576", rate48: true),
         Format(ext: "wmv", label: "Windows Media", video: ["-c:v", "wmv2"], audio: ["-c:a", "wmav2"], muxer: ["-f", "asf"]),
-        Format(ext: "flv", label: "Flash Video", video: ["-c:v", "flv1"], audio: ["-c:a", "aac"]),
+        // PCM: FLV doesn't say how much silence an AAC encoder puts first (64 ms here), so with AAC
+        // the test file itself would be off, not the reading.
+        Format(ext: "flv", label: "Flash Video", video: ["-c:v", "flv1"], audio: ["-c:a", "pcm_s16le", "-ar", "44100"]),
         Format(ext: "webm", label: "WebM VP9 + Opus", video: ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8"],
                audio: ["-c:a", "libopus"]),
         Format(ext: "ogv", label: "Ogg Theora + Vorbis", video: ["-c:v", "libtheora"], audio: ["-c:a", "libvorbis"]),
