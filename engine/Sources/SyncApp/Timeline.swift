@@ -352,7 +352,7 @@ struct NewTrackLane: View {
                 .frame(maxWidth: 520)
             HStack(spacing: Theme.Size.space2) {
                 ActionButton(title: "Elegir carpetas…", systemImage: "folder.badge.plus", primary: true) { model.chooseFolders() }
-                ActionButton(title: "Abrir un XML…", systemImage: "doc.text", primary: false) { model.chooseFile() }
+                ActionButton(title: "Abrir proyecto o XML…", systemImage: "doc.text", primary: false) { model.chooseFile() }
             }
             let recents = model.prefs.recents.filter { FileManager.default.fileExists(atPath: $0) }
             if !recents.isEmpty {
@@ -360,10 +360,11 @@ struct NewTrackLane: View {
                     Text("Recientes").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
                     ForEach(recents, id: \.self) { path in
                         Button {
-                            model.open(URL(fileURLWithPath: path))
+                            model.userOpen(URL(fileURLWithPath: path))
                         } label: {
                             HStack {
-                                Image(systemName: path.hasPrefix(ProjectBuilder.projectsDir.path) ? "folder" : "doc.text")
+                                Image(systemName: path.hasSuffix("." + SavedProject.fileExtension) ? "square.stack.3d.up"
+                                      : path.hasPrefix(ProjectBuilder.projectsDir.path) ? "folder" : "doc.text")
                                 Text((path as NSString).lastPathComponent)
                                 if !path.hasPrefix(ProjectBuilder.projectsDir.path) {
                                     Text((path as NSString).deletingLastPathComponent)

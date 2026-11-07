@@ -20,8 +20,9 @@
   </header>
 
   <section class="actions">
-    <button class="btn primary" id="open" title="Abrir XML (Ctrl+O)">
-      <svg class="i" viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg><span class="label">Abrir XML</span></button>
+    <button class="btn primary" id="open" title="Abrir un proyecto de Synco o el XML de tu editor (Ctrl+O)">
+      <svg class="i" viewBox="0 0 24 24"><path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/></svg><span class="label">Abrir</span></button>
+    <button class="icon" id="save" hidden title="Guardar el proyecto (Ctrl+S)"><svg class="i" viewBox="0 0 24 24"><path d="M5 3h11l3 3v15H5zM8 3v6h8V3M8 21v-7h8v7"/></svg></button>
     <span class="chev">›</span>
     <div class="counter zero" id="c-cams"><b>0</b><span>cámaras</span></div>
     <div class="counter zero" id="c-recs"><b>0</b><span>grabadores</span></div>
@@ -76,7 +77,7 @@
       <svg class="i" viewBox="0 0 24 24" style="width:44px;height:44px;color:var(--muted)"><rect x="3" y="7" width="14" height="14" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12M10 11v6M7 14h6"/></svg>
       <h2>Soltá acá las carpetas de tus cámaras y grabadores</h2>
       <p>Cada carpeta es una pista, con sus tomas en el orden en que se grabaron. Después podés soltar más carpetas o clips sobre una pista para sumarlos, o abajo de todo para crear otra. También podés soltar el XML de tu editor.</p>
-      <div class="buttons"><button class="btn primary" id="folders-empty">Elegir carpetas…</button><button class="btn" id="open-empty">Abrir un XML…</button></div>
+      <div class="buttons"><button class="btn primary" id="folders-empty">Elegir carpetas…</button><button class="btn" id="open-empty">Abrir proyecto o XML…</button></div>
       <div class="recents" id="recents"></div>
       <div class="working-box"><div class="spinner"></div><h2 id="working-text"></h2></div>
     </div>

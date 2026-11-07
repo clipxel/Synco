@@ -67,8 +67,22 @@ public final class FCP7Project {
     public static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif", "tif", "tiff", "gif", "bmp",
                                                       "psd", "dng", "cr2", "cr3", "nef", "arw", "raf", "webp", "svg", "ai", "eps"]
 
-    public init(url: URL) throws {
-        document = try XMLDocument(contentsOf: url, options: [.nodePreserveAll])
+    public convenience init(url: URL) throws {
+        try self.init(document: XMLDocument(contentsOf: url, options: [.nodePreserveAll]))
+    }
+
+    /// A project kept inside a saved Synco project (see SavedProject), as it was when saved.
+    public convenience init(xml: String) throws {
+        try self.init(document: XMLDocument(xmlString: xml, options: [.nodePreserveAll]))
+    }
+
+    /// The project as it is now (clips moved or taken out included), as XML text.
+    public var xmlString: String {
+        String(decoding: document.xmlData(options: [.nodePrettyPrint, .nodeCompactEmptyElement]), as: UTF8.self)
+    }
+
+    init(document: XMLDocument) throws {
+        self.document = document
         // The sequence can sit right under <xmeml> or inside a <project> (bins, other editors).
         guard let root = document.rootElement(), root.name == "xmeml",
               let seq = root.elements(forName: "sequence").first

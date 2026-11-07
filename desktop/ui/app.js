@@ -33,7 +33,11 @@ const S = {
   manual: {},                       // frames each clip was moved by hand after the sync
   playhead: null, playing: false,   // listening to the synced result
   muted: new Set(), solo: null,     // tracks switched off while listening
+  savedPath: null, dirty: false,    // the project's own file (.synco), and whether something changed since
 };
+/** Closing now would lose work: a sync, or corrections, not saved. */
+const hasUnsaved = () => S.dirty && !!S.project && (!!S.starts || S.ignored.size > 0);
+const changed = () => { S.dirty = true; };
 const busy = () => S.phase === "reading" || S.phase === "matching" || S.addingDrone;
 /** Sincronizar can be pressed: with nothing running, or while it reads (it waits for it). */
 const canSync = () => S.phase === "reading" ? !S.syncWhenRead && !S.addingDrone : !!S.project && !busy();
@@ -52,7 +56,12 @@ function message(text, isError = false) {
 
 async function chooseFile() {
   const path = await B.openXML();
-  if (path) open(path);
+  if (path) userOpen(path);
+}
+
+/** Opening something else, as the user asked: first, what is not saved. */
+async function userOpen(path) {
+  if (await confirmLeaving()) open(path);
 }
 
 async function open(path) {
@@ -63,8 +72,16 @@ async function open(path) {
   message(`Abriendo ${name}…`);
   render();
   try {
-    loaded(await B.send("open", { path }));
+    const opened = await B.send("open", { path });
+    loaded(opened);
     await read();
+    // A saved project, opened again: synced as it was left.
+    const was = opened.saved?.outcome;
+    if (was && S.starts && S.phase === "ready" && !S.syncWhenRead) {
+      S.phase = "done";
+      message(`Abierto como lo dejaste: ${was.synced} de ${was.placements.length - droneClips().length} clips sincronizados. No hace falta volver a sincronizar.`);
+      render();
+    }
   } catch (e) {
     S.phase = "failed"; S.opening = null; S.syncWhenRead = false;
     message(`No se pudo abrir ${path.split(/[\\/]/).pop()}. ¿Es un XML de Premiere (Final Cut Pro 7 XML)?`, true);
@@ -75,11 +92,26 @@ async function open(path) {
 function loaded(project) {
   S.opening = null;
   const path = project.path;
+  // The same project again (tracks added): still the one saved in its file.
+  const same = !project.saved && path === S.path;
   stopPlayback();
   Object.assign(S, { project, path, peaks: {}, durations: {}, problems: {}, placements: {}, starts: null, report: "", ignored: new Set(), selected: null, drones: [],
     manual: {}, playhead: null, muted: new Set(), solo: null });
+  const saved = project.saved;
+  if (saved) {
+    if (saved.outcome) applyOutcome(saved.outcome);
+    const ids = new Set(project.clips.map((c) => c.id));
+    Object.assign(S, { savedPath: saved.path, dirty: false, ignored: new Set((saved.ignored || []).filter((id) => ids.has(id))),
+      muted: new Set(saved.mutedTracks || []), solo: saved.soloTrack ?? null, playhead: saved.playhead ?? null,
+      selected: saved.selected && clipById(saved.selected) ? saved.selected : null });
+  } else if (same) {
+    S.dirty = !!S.savedPath;
+  } else {
+    S.savedPath = null; S.dirty = false;
+  }
   buildTracks();
-  prefs.recents = [path, ...prefs.recents.filter((p) => p !== path)].slice(0, 8);
+  const listed = S.savedPath || path;
+  prefs.recents = [listed, ...prefs.recents.filter((p) => p !== listed)].slice(0, 8);
   savePrefs();
   view.fit = true;
   render();
@@ -97,13 +129,15 @@ async function chooseFolders() {
  *  becomes a new track. An editor's XML opens. */
 async function drop(paths, track) {
   if (!paths.length || S.phase === "matching") return;
-  if (paths.length === 1 && /\.xml$/i.test(paths[0])) return open(paths[0]);
+  if (paths.length === 1 && /\.(xml|synco)$/i.test(paths[0])) return userOpen(paths[0]);
+  // Folders dropped on an editor's project start a new one: the old one is left.
+  if (S.project && !S.project.built && !(await confirmLeaving())) return;
   if (busy()) await B.send("cancel").catch(() => {});
   S.phase = "reading"; S.readDone = 0; S.readTotal = 0;
   message("Armando las pistas…");
   render();
   try {
-    const project = await B.send("drop", { paths: paths.filter((p) => !/\.xml$/i.test(p)), track: S.project?.built ? track?.deviceName : null });
+    const project = await B.send("drop", { paths: paths.filter((p) => !/\.(xml|synco)$/i.test(p)), track: S.project?.built ? track?.deviceName : null });
     loaded(project);
     const ok = await read();
     if (ok && project.skipped?.length) {
@@ -233,6 +267,7 @@ async function synchronize() {
   try {
     const r = await B.send("sync", { options: prefs.sync, ignoring: [...S.ignored] });
     applyOutcome(r);
+    changed();
     S.phase = "done";
     const audioClips = r.placements.length - droneClips().length;
     let m = `${r.synced} de ${audioClips} clips sincronizados por audio en ${Math.round(r.seconds)} s. Verificación: ${r.agreed} de ${r.checks} pares a 1 cuadro o menos.`;
@@ -274,6 +309,7 @@ async function addDrone(paths) {
   try {
     const r = await B.send("addDrone", { paths });
     applyOutcome(r);
+    changed();
     const last = S.drones[S.drones.length - 1];
     message(last ? last.summary : "Listo.");
   } catch (e) {
@@ -285,7 +321,7 @@ async function removeDrone(track) {
   if (busy()) return;
   S.addingDrone = true;
   render();
-  try { applyOutcome(await B.send("removeDrone", { name: track.deviceName })); }
+  try { applyOutcome(await B.send("removeDrone", { name: track.deviceName })); changed(); }
   catch (e) { message(e.message, true); }
   finally { S.addingDrone = false; render(); }
 }
@@ -296,6 +332,56 @@ function beep() {
     o.frequency.value = 880; g.gain.setValueAtTime(0.15, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
     o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.5);
   } catch {}
+}
+
+// MARK: Save the project
+
+const canSave = () => !!S.project && S.phase !== "matching" && !S.addingDrone;
+
+/** Saves to its file (.synco), or asks where the first time (or always, with `choosing`). Everything
+ *  goes in it: the tracks, the sync with its hand corrections and drones; the media stay where they are. */
+async function saveProject(choosing = false, chosen = null) {
+  if (!canSave()) return false;
+  let path = chosen || (choosing ? null : S.savedPath);
+  if (!path) {
+    const folder = S.project.exportFolder || S.path.replace(/[\\/][^\\/]*$/, "");
+    const sep = folder.includes("\\") ? "\\" : "/";
+    const name = S.savedPath ? S.savedPath.split(/[\\/]/).pop() : `${S.project.sequence}.synco`;
+    path = await B.saveProject(`${folder}${sep}${name}`);
+    if (!path) return false;
+    if (!/\.synco$/i.test(path)) path += ".synco";
+  }
+  try {
+    await B.send("saveProject", { path, ignored: [...S.ignored], mutedTracks: [...S.muted], soloTrack: S.solo,
+      playhead: S.playhead, selected: S.selected });
+  } catch (e) { message(`No se pudo guardar el proyecto: ${e.message}`, true); return false; }
+  S.savedPath = path; S.dirty = false;
+  prefs.recents = [path, ...prefs.recents.filter((p) => p !== path && p !== S.path)].slice(0, 8);
+  savePrefs();
+  message(`Proyecto guardado: ${path.split(/[\\/]/).pop()}. Abrilo cuando quieras y sigue como está, sin volver a sincronizar.`);
+  render();
+  return true;
+}
+
+/** Before leaving the project (opening another, closing): saves it if the user wants. False when they cancel. */
+function confirmLeaving() {
+  if (!hasUnsaved()) return Promise.resolve(true);
+  const name = S.savedPath ? S.savedPath.split(/[\\/]/).pop().replace(/\.synco$/i, "") : S.project.sequence;
+  return new Promise((resolve) => {
+    const veil = $("veil");
+    veil.innerHTML = "";
+    const s = document.createElement("div"); s.className = "sheet";
+    const h = document.createElement("h3"); h.textContent = `¿Guardás los cambios de “${name}”?`; s.append(h);
+    note(s, "Si no lo guardás, al volver a abrirlo vas a tener que sincronizar de nuevo, y se pierde lo que corregiste a mano.");
+    const done = (v) => { veil.hidden = true; veil.innerHTML = ""; veil.onclick = null; resolve(v); };
+    const row = document.createElement("div"); row.className = "row";
+    row.append(button("Cancelar", () => done(false)), button("No guardar", () => { S.dirty = false; done(true); }),
+      button("Guardar", async () => done(await saveProject()), true));
+    s.append(row);
+    veil.append(s);
+    veil.hidden = false;
+    veil.onclick = (e) => { if (e.target === veil) done(false); };
+  });
 }
 
 // MARK: Export
@@ -342,7 +428,7 @@ function render() {
     const badge = { reading: ["leyendo audio", "var(--accent)"], ready: ["sin sincronizar", "var(--muted)"], matching: ["sincronizando", "var(--accent)"],
       done: ["sincronizado", "var(--success)"], stopped: ["detenido", "var(--warning)"], failed: ["error", "var(--danger)"] }[S.phase] || ["", ""];
     $("title").innerHTML = "";
-    const parts = [["file", S.path.split(/[\\/]/).pop()], ["meta", "›"], ["meta", p.sequence], ["meta", fmtLen(totalDuration())], ["meta", `${Number.isInteger(p.fps) ? p.fps : p.fps.toFixed(3).replace(/0+$/, "").replace(".", ",")} cps`]];
+    const parts = [["file", (S.savedPath || S.path).split(/[\\/]/).pop() + (hasUnsaved() ? " •" : "")], ["meta", "›"], ["meta", p.sequence], ["meta", fmtLen(totalDuration())], ["meta", `${Number.isInteger(p.fps) ? p.fps : p.fps.toFixed(3).replace(/0+$/, "").replace(".", ",")} cps`]];
     for (const [cls, text] of parts) { const s = document.createElement("span"); s.className = cls; s.textContent = text + " "; $("title").append(s); }
     $("title").className = "";
     $("title").style.cssText = "display:flex;gap:10px;align-items:center;min-width:0";
@@ -361,6 +447,11 @@ function render() {
   // Buttons
   $("open").classList.toggle("primary", !has);
   $("open").disabled = busy();
+  $("save").hidden = !has;
+  $("save").disabled = !canSave();
+  $("save").classList.toggle("dirty", hasUnsaved());
+  $("save").title = !S.savedPath ? "Guardar el proyecto (Ctrl+S): lo abrís después tal como está, sin volver a sincronizar"
+    : hasUnsaved() ? `Guardar los cambios en ${S.savedPath.split(/[\\/]/).pop()} (Ctrl+S)` : `Guardado en ${S.savedPath.split(/[\\/]/).pop()}`;
   const syncBtn = $("sync");
   const stops = busy() && !canSync();
   syncBtn.disabled = !has && !canSync();
@@ -406,7 +497,7 @@ function renderRecents() {
     b.innerHTML = `<b></b><span></span>`;
     b.querySelector("b").textContent = name;
     b.querySelector("span").textContent = path.slice(0, path.length - name.length);
-    b.onclick = () => open(path);
+    b.onclick = () => userOpen(path);
     box.append(b);
   }
 }
@@ -621,7 +712,7 @@ function renderInspector() {
   fix.textContent = S.ignored.has(c.id) ? "Deshacer corrección" : "Está mal: ubicarlo por su hora";
   fix.title = "Deja de usar el audio de este clip y lo ubica por la hora del archivo. Se aplica al volver a sincronizar.";
   fix.disabled = busy();
-  fix.onclick = () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); render(); };
+  fix.onclick = () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); changed(); render(); };
   box.append(fix);
   if (B.inTauri) small(revealText(), "", () => B.reveal(c.path), !c.exists);
 }
@@ -902,6 +993,10 @@ async function installUpdate() {
 
 $("open").onclick = chooseFile;
 $("open-empty").onclick = chooseFile;
+$("save").onclick = () => saveProject();
+// The window's close button asks first, when there is a sync not saved.
+window.hasUnsavedWork = hasUnsaved;
+B.onClose(() => confirmLeaving());
 $("sync").onclick = () => (canSync() ? synchronize() : busy() ? stop() : null);
 $("export").onclick = () => exportXML();
 $("drone").onclick = () => addDrone();
@@ -936,6 +1031,7 @@ window.addEventListener("keydown", (e) => {
   if (!(e.ctrlKey || e.metaKey)) return;
   const k = e.key.toLowerCase();
   if (k === "o") { e.preventDefault(); chooseFile(); }
+  else if (k === "s") { e.preventDefault(); saveProject(e.shiftKey); }
   else if (k === "r") { e.preventDefault(); synchronize(); }
   else if (k === "e") { e.preventDefault(); exportXML(); }
   else if (k === ".") { e.preventDefault(); stop(); }
@@ -978,6 +1074,7 @@ function moveTargets(c) {
 /** After taking out or moving a clip: the project as it is now, keeping what was read and synced. */
 function edited(r) {
   S.project = r.project;
+  changed();
   if (r.outcome) applyOutcome(r.outcome); else buildTracks();
   render();
 }
@@ -1011,14 +1108,15 @@ async function nudge(id, frames) {
   if (busy() || !S.starts || S.starts[id] === undefined) return;
   const r = await B.send("nudge", { clip: id, frames });
   S.starts = r.starts; S.manual = r.manual || {}; S.report = r.report;
+  changed();
   const c = clipById(id), total = S.manual[id] || 0;
   message(total ? `${c.name}: corrido a mano ${total > 0 ? "+" : ""}${total} cuadro(s). Escuchalo con la barra espaciadora.` : `${c.name}: de nuevo donde lo puso Synco.`);
   render();
   if (S.playing) play();
 }
 
-function toggleMute(t) { S.muted.has(t.id) ? S.muted.delete(t.id) : S.muted.add(t.id); render(); if (S.playing) play(); }
-function toggleSolo(t) { S.solo = S.solo === t.id ? null : t.id; render(); if (S.playing) play(); }
+function toggleMute(t) { S.muted.has(t.id) ? S.muted.delete(t.id) : S.muted.add(t.id); changed(); render(); if (S.playing) play(); }
+function toggleSolo(t) { S.solo = S.solo === t.id ? null : t.id; changed(); render(); if (S.playing) play(); }
 const mutedClips = () => S.tracks.filter((t) => S.muted.has(t.id) || (S.solo && S.solo !== t.id)).flatMap((t) => t.clips.map((c) => c.id));
 
 // MARK: Right-click menus (the app's own: the browser's never shows)
@@ -1077,7 +1175,7 @@ function clipMenu(c, at) {
   if (targets.length) items.push({ label: "Mover a la pista", disabled: busy(), sub: targets.map((t) => ({ label: t.name, fn: () => moveClip(c, t) })) });
   if (!isDrone) {
     items.push({ label: S.ignored.has(c.id) ? "Deshacer: volver a usar su audio" : "Está mal: ubicarlo por su hora", disabled: busy(),
-      fn: () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); render(); } });
+      fn: () => { S.ignored.has(c.id) ? S.ignored.delete(c.id) : S.ignored.add(c.id); changed(); render(); } });
   }
   if (items.length) items.push("-");
   if (B.inTauri) {

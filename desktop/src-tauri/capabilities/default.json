@@ -9,6 +9,8 @@
     "opener:default",
     "opener:allow-reveal-item-in-dir",
     { "identifier": "opener:allow-open-path", "allow": [{ "path": "**" }] },
-    "process:allow-exit"
+    "process:allow-exit",
+    "core:window:allow-close",
+    "core:window:allow-destroy"
   ]
 }

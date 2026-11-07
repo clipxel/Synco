@@ -67,6 +67,23 @@ enum EditTest {
         print("\(good ? "PASA " : "FALLA")  movido a la pista de \(movedTo ?? "?"), \(gone.name) quitado: así queda en el XML")
         ok = ok && good
 
+        // Saved to a file and opened again: the same project and sync, exported the same.
+        var saved = SavedProject(xml: session.project.xmlString, source: xmlURL.path)
+        saved.outcome = result!.saved
+        saved.ignored = [gone.fileID]
+        let file = folder.appendingPathComponent("edicion.synco")
+        try saved.write(to: file)
+        let back = try SavedProject.read(file)
+        let reopened = try back.project()
+        let restored = back.outcome(for: reopened)
+        let again = SyncSession(project: reopened, cache: cache, rate: 4000)
+        let out2 = folder.appendingPathComponent("edicion reabierta - sincronizado.xml")
+        if let restored { try again.export(restored, to: out2) }
+        let same = restored != nil && (try? String(contentsOf: out2, encoding: .utf8)) == (try? String(contentsOf: out, encoding: .utf8))
+            && restored?.manual == result!.manual && back.ignored == [gone.fileID]
+        print("\(same ? "PASA " : "FALLA")  proyecto guardado y abierto de nuevo: igual, con lo corrido a mano, sin volver a sincronizar")
+        ok = ok && same
+
         // A clip with picture can't go onto a track with only sound.
         if let video = project.clips.first(where: { $0.hasVideo }) {
             let refused = (try? session.project.move(video.fileID, like: rec.fileID)) == nil

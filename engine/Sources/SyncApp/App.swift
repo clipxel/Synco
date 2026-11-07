@@ -40,11 +40,11 @@ struct SyncoApp: App {
                 Button("Código fuente") { Contact.open(Contact.source) }
             }
             CommandGroup(replacing: .newItem) {
-                Button("Abrir XML…") { model.chooseFile() }.keyboardShortcut("o")
+                Button("Abrir proyecto o XML…") { model.chooseFile() }.keyboardShortcut("o")
                 Button("Armar desde carpetas…") { model.chooseFolders() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Menu("Abrir reciente") {
                     ForEach(model.prefs.recents, id: \.self) { path in
-                        Button((path as NSString).lastPathComponent) { model.open(URL(fileURLWithPath: path)) }
+                        Button((path as NSString).lastPathComponent) { model.userOpen(URL(fileURLWithPath: path)) }
                     }
                     if !model.prefs.recents.isEmpty {
                         Divider()
@@ -54,6 +54,14 @@ struct SyncoApp: App {
                 Button("Volver a cargar") { model.reload() }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(model.fileURL == nil)
+            }
+            CommandGroup(replacing: .saveItem) {
+                Button("Guardar proyecto") { model.saveProject() }
+                    .keyboardShortcut("s")
+                    .disabled(!model.canSave)
+                Button("Guardar proyecto como…") { model.saveProject(choosing: true) }
+                    .keyboardShortcut("s", modifiers: [.command, .shift])
+                    .disabled(!model.canSave)
             }
             CommandGroup(after: .newItem) {
                 Divider()
@@ -98,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         // A smaller screen than the one it was last used on: the window fits on it, whole.
-        DispatchQueue.main.async { Self.fitOnScreen() }
+        DispatchQueue.main.async { Self.fitOnScreen(); Self.guardCloseButton() }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
             Self.fitOnScreen()
         }
@@ -119,7 +127,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Quitting with a sync not saved: asks first.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { model?.confirmLeaving() ?? true } ? .terminateNow : .terminateCancel
+    }
+
+    /// The window's close button asks too (closing it quits the app).
+    @MainActor static func guardCloseButton() {
+        for window in NSApp.windows where window.styleMask.contains(.closable) {
+            guard let button = window.standardWindowButton(.closeButton), !(button.target is CloseGuard) else { continue }
+            let guardian = CloseGuard(window: window)
+            CloseGuard.kept.append(guardian)
+            button.target = guardian
+            button.action = #selector(CloseGuard.close)
+        }
+    }
+
     func application(_ application: NSApplication, open urls: [URL]) {
-        if let url = urls.first { Task { @MainActor in self.model?.open(url) } }
+        if let url = urls.first { Task { @MainActor in self.model?.userOpen(url) } }
+    }
+}
+
+@MainActor
+final class CloseGuard: NSObject {
+    static var kept = [CloseGuard]()
+    weak var window: NSWindow?
+    init(window: NSWindow) { self.window = window }
+
+    @objc func close() {
+        guard let delegate = NSApp.delegate as? AppDelegate, delegate.model?.confirmLeaving() ?? true else { return }
+        delegate.model?.dirty = false
+        window?.close()
     }
 }

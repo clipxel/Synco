@@ -55,6 +55,18 @@ public func readableURL(_ url: URL) -> URL {
 /// here, block by block, so a long file never sits in memory at full rate.
 /// With `from` and `length`, only that stretch of the file (in seconds).
 public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double? = nil) throws -> AudioTrack {
+    // What Apple's reader can't open (MKV, AVI, WebM, MTS, WMV, FLV, MPEG-2…) goes to ffmpeg,
+    // bundled with the app, as on Windows and Linux.
+    if !FFmpeg.prefersApple(url) { return try ffmpegDecodeAudio(url: url, rate: rate, from: from, length: length) }
+    do {
+        return try appleDecodeAudio(url: url, rate: rate, from: from, length: length)
+    } catch {
+        guard FFmpeg.available, let track = try? ffmpegDecodeAudio(url: url, rate: rate, from: from, length: length) else { throw error }
+        return track
+    }
+}
+
+func appleDecodeAudio(url: URL, rate: Double, from: Double, length: Double?) throws -> AudioTrack {
     let asset = AVURLAsset(url: readableURL(url))
     let tracks = asset.tracks(withMediaType: .audio)
     guard !tracks.isEmpty else { throw MediaError.noAudio(url) }
@@ -107,11 +119,18 @@ public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double
 
 #else
 
-/// Decodes every audio stream of a file, mixed to mono, at `rate` Hz, with ffmpeg (bundled
-/// next to the app on Windows and Linux). It decodes at the file's own sample rate, like the
-/// macOS path, and the same filter and decimation take it down from there.
+/// Decodes every audio stream of a file, mixed to mono, at `rate` Hz, with the bundled ffmpeg.
 /// With `from` and `length`, only that stretch of the file (in seconds).
 public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double? = nil) throws -> AudioTrack {
+    try ffmpegDecodeAudio(url: url, rate: rate, from: from, length: length)
+}
+#endif
+
+/// Decodes every audio stream of a file, mixed to mono, at `rate` Hz, with ffmpeg (bundled
+/// next to the app). It decodes at the file's own sample rate, like the macOS path, and the
+/// same filter and decimation take it down from there.
+func ffmpegDecodeAudio(url: URL, rate: Double, from: Double, length: Double?) throws -> AudioTrack {
+    guard FileManager.default.fileExists(atPath: url.path) else { throw MediaError.missing(url) }
     let info = FFmpeg.probe(url)
     guard info.audioStreams > 0 else { throw MediaError.noAudio(url) }
     let native = info.sampleRate > 0 ? info.sampleRate : 48000
@@ -139,6 +158,22 @@ public func decodeAudio(url: URL, rate: Double, from: Double = 0, length: Double
 enum FFmpeg {
     struct Info { var audioStreams = 0; var sampleRate = 0.0; var creation: Date? }
 
+    /// Containers Apple's own reader opens: tried first on the Mac (no extra process, and
+    /// it knows every ProRes and HEVC variant). The rest go straight to ffmpeg.
+    static let appleContainers: Set<String> = ["mov", "mp4", "m4v", "m4a", "insv", "lrf", "3gp", "3g2", "wav", "bwf",
+                                               "aif", "aiff", "aifc", "caf", "mp3", "aac", "ac3", "eac3", "m4b", "mxf"]
+
+    static func prefersApple(_ url: URL) -> Bool {
+        appleContainers.contains(url.pathExtension.lowercased()) || !available
+    }
+
+    /// Whether ffmpeg is there to run (bundled with the app, or for tests named in SYNCO_FFMPEG).
+    static let available: Bool = {
+        let exe = executable
+        if exe.pathComponents.count > 1 { return FileManager.default.isExecutableFile(atPath: exe.path) }
+        return (try? run(["-hide_banner", "-version"]))?.contains("ffmpeg version") ?? false
+    }()
+
     static var executable: URL {
         let env = ProcessInfo.processInfo.environment
         if let path = env["SYNCO_FFMPEG"] { return URL(fileURLWithPath: path) }
@@ -148,7 +183,7 @@ enum FFmpeg {
         let name = "ffmpeg"
         #endif
         let here = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
-        for dir in [here, here.appendingPathComponent("ffmpeg")] {
+        for dir in [here, here.appendingPathComponent("ffmpeg"), here.deletingLastPathComponent().appendingPathComponent("Resources")] {
             let candidate = dir.appendingPathComponent(name)
             if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
         }
@@ -252,7 +287,6 @@ enum FFmpeg {
         }
     }
 }
-#endif
 
 /// Streaming low-pass (windowed sinc, cut at 90% of the decimated rate's Nyquist)
 /// followed by keeping every `factor`th sample.
@@ -422,7 +456,8 @@ func rawRecordingStart(url: URL) -> Date? {
            let length = wavDuration(url: url) {
             date = closed.addingTimeInterval(-length)
         }
-    case "mov", "mp4", "m4v", "mxf", "mts", "m4a":
+    case "mov", "mp4", "m4v", "mxf", "mts", "m2ts", "ts", "m4a", "3gp", "mkv", "webm", "avi", "wmv", "asf",
+         "flv", "mpg", "mpeg", "vob", "mod", "tod", "m2t", "dv", "ogv", "mka", "f4v", "3g2":
         // Inside the file it is often whole seconds only; the file date has fractions.
         // Keep the file date when both agree, the metadata when the file date was lost in a copy.
         if let meta = quickTimeCreation(url: url) {
@@ -531,8 +566,9 @@ func broadcastStart(url: URL, near fileDate: Date?) -> Date? {
 func quickTimeCreation(url: URL) -> Date? {
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
     let asset = AVURLAsset(url: readableURL(url))
-    guard let date = asset.creationDate?.dateValue,
-          date.timeIntervalSince1970 > 946_684_800 else { return nil } // ignore unset clocks (before 2000)
+    if let date = asset.creationDate?.dateValue, date.timeIntervalSince1970 > 946_684_800 { return date } // ignore unset clocks (before 2000)
+    guard FFmpeg.available, !FFmpeg.prefersApple(url) || asset.tracks.isEmpty,
+          let date = FFmpeg.probe(url).creation, date.timeIntervalSince1970 > 946_684_800 else { return nil }
     return date
 #else
     guard let date = FFmpeg.probe(url).creation, date.timeIntervalSince1970 > 946_684_800 else { return nil }

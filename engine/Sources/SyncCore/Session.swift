@@ -303,10 +303,12 @@ public final class SyncSession {
                 if options.disableUnsynced { disabled.insert(p.id) }
             }
         }
-        project.setDroneTracks(outcome.drones, starts: outcome.starts, labels: labels, disabled: disabled)
-        project.apply(starts: outcome.starts, labels: labels, disabled: disabled)
-        project.rename(project.sequenceName + options.sequenceSuffix)
-        try project.write(to: url)
+        // Written from a copy: the open project stays as it was (to save it, or export again).
+        let copy = try FCP7Project(xml: project.xmlString)
+        copy.setDroneTracks(outcome.drones, starts: outcome.starts, labels: labels, disabled: disabled)
+        copy.apply(starts: outcome.starts, labels: labels, disabled: disabled)
+        copy.rename(project.sequenceName + options.sequenceSuffix)
+        try copy.write(to: url)
         if options.writeReport {
             try report(outcome).write(to: url.deletingPathExtension().appendingPathExtension("md"), atomically: true, encoding: .utf8)
         }

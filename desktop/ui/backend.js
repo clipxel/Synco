@@ -55,8 +55,20 @@ const backend = {
   on(event, fn) { (listeners[event] ||= []).push(fn); },
 
   async openXML() {
-    if (inTauri) return T.dialog.open({ multiple: false, filters: [{ name: "XML de línea de tiempo", extensions: ["xml"] }] });
+    if (inTauri) return T.dialog.open({ multiple: false, filters: [{ name: "Proyecto de Synco o XML de línea de tiempo", extensions: ["synco", "xml"] }] });
     return devDialog("open");
+  },
+  async saveProject(defaultPath) {
+    if (inTauri) return T.dialog.save({ defaultPath, filters: [{ name: "Proyecto de Synco", extensions: ["synco"] }] });
+    return devDialog("save", { defaultPath });
+  },
+  /** Before the window closes: `ask` resolves false to keep it open. */
+  onClose(ask) {
+    if (inTauri && T.window) {
+      T.window.getCurrentWindow().onCloseRequested(async (e) => { if (!(await ask())) e.preventDefault(); });
+    } else {
+      window.addEventListener("beforeunload", (e) => { if (window.hasUnsavedWork?.()) e.preventDefault(); });
+    }
   },
   async saveXML(defaultPath) {
     if (inTauri) return T.dialog.save({ defaultPath, filters: [{ name: "XML", extensions: ["xml"] }] });

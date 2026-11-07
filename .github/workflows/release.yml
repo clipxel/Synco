@@ -57,14 +57,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Versión
         run: echo "VERSION=$(cat engine/VERSION)" >> "$GITHUB_ENV"
+      - name: ffmpeg (guardado entre compilaciones)
+        id: ffcache
+        uses: actions/cache@v4
+        with:
+          path: engine/.build/ffmpeg-mac
+          key: ffmpeg-mac-${{ hashFiles('engine/ffmpeg_mac.sh') }}
+      - name: ffmpeg (LGPL, compilado de su código, universal)
+        if: steps.ffcache.outputs.cache-hit != 'true'
+        run: UNIVERSAL=1 engine/ffmpeg_mac.sh
       - name: Compilar (universal)
-        run: UNIVERSAL=1 engine/make_app.sh
+        run: UNIVERSAL=1 FFMPEG=engine/.build/ffmpeg-mac/ffmpeg engine/make_app.sh
       - name: Probar
         run: |
           lipo -archs Synco.app/Contents/MacOS/Synco          # arm64 x86_64
+          lipo -archs Synco.app/Contents/MacOS/ffmpeg          # arm64 x86_64
           codesign --verify --deep Synco.app
           swift build -c release --package-path engine --product synccli
-          engine/.build/release/synccli selftest "$RUNNER_TEMP/selftest"
+          # The app's ffmpeg only reads: a full one (Homebrew) writes the files of the format test.
+          brew install ffmpeg >/dev/null 2>&1 || true
+          WRITER=$(brew --prefix 2>/dev/null)/bin/ffmpeg
+          SYNCO_FFMPEG="$PWD/Synco.app/Contents/MacOS/ffmpeg" SYNCO_FFMPEG_WRITER="$WRITER" \
+            engine/.build/release/synccli selftest "$RUNNER_TEMP/selftest"
           ( Synco.app/Contents/MacOS/Synco --snapshot shot.png --quit & PID=$!; sleep 60; kill $PID 2>/dev/null || true ) || true
           [ -s shot.png ] && echo "ventana OK"
       - name: Empaquetar

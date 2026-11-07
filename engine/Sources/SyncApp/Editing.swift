@@ -25,6 +25,7 @@ extension AppModel {
         if selected == id { selected = nil }
         buildTracks()
         saveBuilt()
+        dirty = true
         message = "Quitado del proyecto: \(clip.name). El archivo sigue en su carpeta; soltalo de nuevo para volver a sumarlo."
     }
 
@@ -41,6 +42,7 @@ extension AppModel {
         }
         buildTracks()
         saveBuilt()
+        dirty = true
         message = "\(clip.name) pasó a la pista de \(target.name). "
             + "Sigue en el mismo lugar; al volver a sincronizar cuenta como de esa pista."
     }
@@ -68,6 +70,7 @@ extension AppModel {
         o.nudge(id, by: frames)
         outcome = o
         starts = o.starts
+        dirty = true
         let total = o.manual[id] ?? 0
         message = total == 0 ? "\(clip.name): de nuevo donde lo puso Synco."
             : "\(clip.name): corrido a mano \(total > 0 ? "+" : "")\(total) cuadro(s). Escuchalo con la barra espaciadora."
@@ -122,11 +125,13 @@ extension AppModel {
 
     func toggleMute(_ track: TrackRow) {
         if mutedTracks.contains(track.id) { mutedTracks.remove(track.id) } else { mutedTracks.insert(track.id) }
+        dirty = true
         if playing { play() }
     }
 
     func toggleSolo(_ track: TrackRow) {
         soloTrack = soloTrack == track.id ? nil : track.id
+        dirty = true
         if playing { play() }
     }
 

@@ -61,6 +61,7 @@ final class Server {
     private func handle(_ cmd: String, _ msg: [String: Any]) throws -> Any {
         switch cmd {
         case "open": return try open(msg["path"] as? String ?? "")
+        case "saveProject": return try saveProject(msg)
         case "read": return try read((msg["options"] as? [String: Any])?["speed"] as? String)
         case "sync": return try sync(msg)
         case "export": return try export(msg)
@@ -85,8 +86,11 @@ final class Server {
 
     private func open(_ path: String) throws -> [String: Any] {
         stopAhead()
-        let url = URL(fileURLWithPath: path)
-        let project = try FCP7Project(url: url)
+        var url = URL(fileURLWithPath: path)
+        // A saved Synco project: its tracks and its sync, as they were left.
+        let saved = url.pathExtension.lowercased() == SavedProject.fileExtension ? try SavedProject.read(url) : nil
+        let project = try saved?.project() ?? FCP7Project(url: url)
+        if let saved { url = URL(fileURLWithPath: saved.source) }
         guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
         // Every file's recording date, read up front (it reads each file's header): with the progress.
         let total = project.clips.count
@@ -101,7 +105,41 @@ final class Server {
         outcome = nil
         droneSources = []
         fileURL = url
-        return describe(project, path: path)
+        guard let saved else { return describe(project, path: path) }
+        // Built from folders: its XML in Synco's folder, written again if it is gone.
+        if isBuilt, !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: ProjectBuilder.projectsDir, withIntermediateDirectories: true)
+            try? saved.xml.write(to: url, atomically: true, encoding: .utf8)
+        }
+        outcome = saved.outcome(for: project)
+        droneSources = saved.droneFiles.map { $0.map { URL(fileURLWithPath: $0) } }
+        var out = describe(project, path: url.path)
+        var restored: [String: Any] = [
+            "path": path, "ignored": saved.ignored, "mutedTracks": saved.mutedTracks,
+        ]
+        if let o = outcome, let session { restored["outcome"] = describe(o, session) }
+        if let solo = saved.soloTrack { restored["soloTrack"] = solo }
+        if let t = saved.playhead { restored["playhead"] = t }
+        if let sel = saved.selected { restored["selected"] = sel }
+        out["saved"] = restored
+        return out
+    }
+
+    /// Saves the project to a file of its own (.synco): the tracks, the sync with its hand
+    /// corrections and drones, and what the app sends of how it is being looked at.
+    private func saveProject(_ msg: [String: Any]) throws -> [String: Any] {
+        guard let session, let fileURL, let path = msg["path"] as? String, !path.isEmpty else { throw ServerError("no hay proyecto abierto") }
+        var saved = SavedProject(xml: session.project.xmlString, source: fileURL.path)
+        saved.app = "Synco \(engineVersion)"
+        saved.outcome = outcome?.saved
+        saved.ignored = msg["ignored"] as? [String] ?? []
+        saved.droneFiles = droneSources.map { $0.map(\.path) }
+        saved.mutedTracks = msg["mutedTracks"] as? [String] ?? []
+        saved.soloTrack = msg["soloTrack"] as? String
+        saved.playhead = msg["playhead"] as? Double
+        saved.selected = msg["selected"] as? String
+        try saved.write(to: URL(fileURLWithPath: path))
+        return ["path": path]
     }
 
     /// Whether the open project is one Synco built from dropped folders (so it takes more of them).

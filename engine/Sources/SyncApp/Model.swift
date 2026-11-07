@@ -105,6 +105,10 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var fileURL: URL?
+    /// The project's own file (.synco), once saved or opened from one.
+    @Published var savedURL: URL?
+    /// Something changed since it was last saved (or opened).
+    @Published var dirty = false
     @Published var project: FCP7Project?
     @Published var tracks: [TrackRow] = []
     @Published var placements: [String: Placement] = [:]
@@ -145,7 +149,7 @@ final class AppModel: ObservableObject {
 
     /// Command-line test runs (any "--" argument) read the user's settings but never write them,
     /// even if they are cut off halfway.
-    private let persist = !CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
+    let persist = !CommandLine.arguments.dropFirst().contains { $0.hasPrefix("--") }
         && !ProcessInfo.processInfo.environment.keys.contains { $0.hasPrefix("SYNCO_UPDATE") }
 
     init() {
@@ -189,7 +193,7 @@ final class AppModel: ObservableObject {
     /// Placing a drone after the sync (the extra step, on its own).
     @Published var addingDrone = false
     /// The drones added, kept to add them again after the next sync.
-    private var droneSources = [[URL]]()
+    var droneSources = [[URL]]()
     var cameras: Int { tracks.filter { $0.kind == .camera }.count }
     var recorders: Int { tracks.filter { $0.kind == .recorder }.count }
     var clipCount: Int { project?.clips.count ?? 0 }
@@ -236,9 +240,10 @@ final class AppModel: ObservableObject {
 
     func chooseFile() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.xml]
+        panel.allowedContentTypes = [.syncoProject, .xml]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { open(url) }
+        panel.message = "Elegí un proyecto de Synco (.synco) o el XML de tu editor."
+        if panel.runModal() == .OK, let url = panel.url { userOpen(url) }
     }
 
     // MARK: Build from folders
@@ -264,8 +269,10 @@ final class AppModel: ObservableObject {
     /// (all of them into it), or, dropped below the tracks, each folder becomes a new track.
     func drop(_ urls: [URL], onto track: TrackRow?) {
         guard !urls.isEmpty, phase != .matching else { return }
-        if urls.count == 1, urls[0].pathExtension.lowercased() == "xml" { open(urls[0]); return }
-        let media = urls.filter { $0.pathExtension.lowercased() != "xml" }
+        if urls.count == 1, ["xml", SavedProject.fileExtension].contains(urls[0].pathExtension.lowercased()) { userOpen(urls[0]); return }
+        let media = urls.filter { !["xml", SavedProject.fileExtension].contains($0.pathExtension.lowercased()) }
+        // Folders dropped on an editor's project start a new one: the old one is left.
+        if project != nil, !isBuilt, !confirmLeaving() { return }
         // A project from an editor's XML is the editor's: folders start a new one.
         let current = isBuilt ? project.flatMap(ProjectBuilder.sources(of:)) ?? [] : []
         let sources: [ProjectBuilder.Source]
@@ -290,6 +297,8 @@ final class AppModel: ObservableObject {
     func close() {
         stop()
         syncWhenRead = false
+        savedURL = nil
+        dirty = false
         project = nil
         session = nil
         fileURL = nil
@@ -360,6 +369,7 @@ final class AppModel: ObservableObject {
     /// (a long event can take a while), with the progress on screen.
     func open(_ url: URL) {
         stop()
+        let isSaved = url.pathExtension.lowercased() == SavedProject.fileExtension
         let token = UUID()
         openToken = token
         phase = .reading
@@ -368,8 +378,10 @@ final class AppModel: ObservableObject {
         message = "Abriendo \(url.lastPathComponent)…"
         Task.detached(priority: .userInitiated) { [weak self] in
             let result: Result<FCP7Project, Error>
+            var saved: SavedProject?
             do {
-                let project = try FCP7Project(url: url)
+                if isSaved { saved = try SavedProject.read(url) }
+                let project = try saved?.project() ?? FCP7Project(url: url)
                 guard !project.clips.isEmpty else { throw ProjectError.notFCP7("la secuencia no tiene clips con archivo") }
                 let total = project.clips.count
                 await MainActor.run { self?.readTotal = total }
@@ -393,18 +405,20 @@ final class AppModel: ObservableObject {
             }
             await MainActor.run {
                 guard let self, self.openToken == token else { return }
-                self.opened(result, url: url)
+                self.opened(result, url: url, saved: saved)
             }
         }
     }
 
     private var openToken = UUID()
 
-    private func opened(_ result: Result<FCP7Project, Error>, url: URL) {
+    private func opened(_ result: Result<FCP7Project, Error>, url: URL, saved: SavedProject? = nil) {
         do {
             let project = try result.get()
+            // The same project again (tracks added, reloaded): still the one saved in its file.
+            let same = saved == nil && url == fileURL
             self.project = project
-            fileURL = url
+            fileURL = saved.map { URL(fileURLWithPath: $0.source) } ?? url
             session = SyncSession(project: project)
             outcome = nil
             droneSources = []
@@ -414,13 +428,22 @@ final class AppModel: ObservableObject {
             durations = [:]
             ignored = []
             selected = nil
-        playhead = nil
-        pictureClip = nil
-        mutedTracks = []
-        soloTrack = nil
-        videoPlayer.replaceCurrentItem(with: nil)
+            playhead = nil
+            pictureClip = nil
+            mutedTracks = []
+            soloTrack = nil
+            videoPlayer.replaceCurrentItem(with: nil)
+            if let saved {
+                restore(saved, from: url)
+            } else if same {
+                dirty = savedURL != nil
+            } else {
+                savedURL = nil
+                dirty = false
+            }
             buildTracks()
-            prefs.recents = ([url.path] + prefs.recents.filter { $0 != url.path }).prefix(8).map { $0 }
+            let listed = savedURL ?? url
+            prefs.recents = ([listed.path] + prefs.recents.filter { $0 != listed.path }).prefix(8).map { $0 }
             refreshMissing()
             if !missing.isEmpty { showPathFixer = true }
             readAudio()
@@ -432,7 +455,7 @@ final class AppModel: ObservableObject {
     }
 
     func reload() {
-        if let fileURL { open(fileURL) }
+        if let url = savedURL ?? fileURL { open(url) }
     }
 
     func buildTracks() {
@@ -489,6 +512,14 @@ final class AppModel: ObservableObject {
                     self.durations = durations
                     let failed = session.problems.count
                     let images = session.project.skippedImages.count
+                    if let outcome = self.outcome, next == nil, !self.syncWhenRead {
+                        // A saved project, opened again: synced as it was left.
+                        self.phase = .done
+                        self.message = "Abierto como lo dejaste: \(outcome.synced) de \(outcome.placements.count) clips sincronizados. "
+                            + "No hace falta volver a sincronizar."
+                        if failed > 0 { self.message += " \(failed) archivo(s) no se pudieron leer: no se escuchan." }
+                        return
+                    }
                     self.phase = .ready
                     self.message = failed == 0
                         ? "Listo para sincronizar."
@@ -605,6 +636,7 @@ final class AppModel: ObservableObject {
                     // The frames moved by hand before stay moved, on top of the new sync.
                     outcome.applyManual(self.outcome?.manual ?? [:])
                     self.outcome = outcome
+                    self.dirty = true
                     self.placements = Dictionary(uniqueKeysWithValues: outcome.placements.map { ($0.id, $0) })
                     self.starts = outcome.starts
                     self.phase = .done
@@ -647,6 +679,7 @@ final class AppModel: ObservableObject {
     /// Marks a clip as wrongly synced (or undoes it); the next sync places it by its clock.
     func toggleIgnored(_ id: String) {
         if ignored.contains(id) { ignored.remove(id) } else { ignored.insert(id) }
+        dirty = true
     }
 
     func clearFixes() {
@@ -697,6 +730,7 @@ final class AppModel: ObservableObject {
                 self.placements = Dictionary(uniqueKeysWithValues: result.placements.map { ($0.id, $0) })
                 self.starts = result.starts
                 self.droneSources += added
+                if !added.isEmpty { self.dirty = true }
                 self.buildTracks()
                 if let failure {
                     self.message = failure is SyncCancelled ? "Se dejó de agregar el dron." : "No se pudo agregar el dron: \(failure)"
@@ -718,6 +752,7 @@ final class AppModel: ObservableObject {
         placements = Dictionary(uniqueKeysWithValues: kept.placements.map { ($0.id, $0) })
         starts = kept.starts
         droneSources = []
+        dirty = true
         buildTracks()
         if !sources.isEmpty { addDrones(sources) }
     }
@@ -763,11 +798,10 @@ final class AppModel: ObservableObject {
             }
         }
         if found > 0 {
+            // The files moved, not the sync: where they go stays (their audio is read again).
             buildTracks()
             refreshMissing()
-            outcome = nil
-            starts = nil
-            placements = [:]
+            dirty = true
             readAudio()
         }
         return found

@@ -72,7 +72,9 @@ struct HeaderBar: View {
             BrandMark()
             Rectangle().fill(Theme.border).frame(width: 1, height: 18)
             if let url = model.fileURL, let project = model.project {
-                Text(url.lastPathComponent).font(Theme.Font.lg).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                Text((model.savedURL ?? url).lastPathComponent + (model.hasUnsaved ? " •" : ""))
+                    .font(Theme.Font.lg).lineLimit(1).truncationMode(.middle).layoutPriority(1)
+                    .help(model.hasUnsaved ? "Hay cambios sin guardar (⌘S)" : (model.savedURL ?? url).path)
                 if room > .tight {
                     Image(systemName: "chevron.right").font(Theme.Font.xs).foregroundStyle(Theme.textMuted)
                     Text(project.sequenceName).font(Theme.Font.base).foregroundStyle(Theme.textMuted).lineLimit(1).truncationMode(.tail)
@@ -177,14 +179,24 @@ struct ActionBar: View {
     var body: some View {
         HStack(spacing: room == .tight ? Theme.Size.space1 : Theme.Size.space3) {
             HStack(spacing: Theme.Size.space1) {
-                ActionButton(title: "Abrir XML", systemImage: "square.and.arrow.down", primary: model.project == nil) {
+                ActionButton(title: "Abrir", systemImage: "square.and.arrow.down", primary: model.project == nil) {
                     model.chooseFile()
                 }
+                .help("Abrir un proyecto de Synco o el XML de tu editor (⌘O)")
                 .disabled(model.busy)
                 IconButton(systemImage: "folder.badge.plus", help: "Armar el proyecto desde las carpetas de tus cámaras y grabadores") {
                     model.chooseFolders()
                 }
                 .disabled(model.phase == .matching || model.addingDrone)
+                if model.project != nil {
+                    IconButton(systemImage: model.dirty ? "square.and.arrow.down.on.square.fill" : "square.and.arrow.down.on.square",
+                               help: model.savedURL == nil ? "Guardar el proyecto (⌘S): lo abrís después tal como está, sin volver a sincronizar"
+                                   : model.dirty ? "Guardar los cambios en \(model.savedURL!.lastPathComponent) (⌘S)"
+                                   : "Guardado en \(model.savedURL!.lastPathComponent)") {
+                        model.saveProject()
+                    }
+                    .disabled(!model.canSave)
+                }
             }
             Chevron()
             // With little room, the tracks themselves say how many there are.

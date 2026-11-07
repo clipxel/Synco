@@ -144,6 +144,8 @@ enum Selftest {
         ok = midnight() && ok
         ok = splitRecorder() && ok
         ok = try DroneTest.run(folder: folder.appendingPathComponent("dron"), cache: cache) && ok
+        ok = try FormatTest.run(folder: folder.appendingPathComponent("formatos"), master: master, rate: rate,
+                                recorder: folder.appendingPathComponent(recorderName), cache: cache) && ok
         print(ok ? "selftest: todo bien" : "selftest: HAY FALLAS")
         return ok
     }

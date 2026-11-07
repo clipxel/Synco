@@ -29,7 +29,7 @@ public enum Drone {
             guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { continue }
             out += isDir.boolValue ? ProjectBuilder.mediaFiles(in: url) : [url]
         }
-        let video: Set<String> = ["mp4", "mov", "m4v", "mxf", "mts", "avi", "mkv"]
+        let video = ProjectBuilder.videoExtensions.subtracting(["insv"])
         return out.filter { video.contains($0.pathExtension.lowercased()) && !$0.lastPathComponent.hasPrefix("._") }
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
     }

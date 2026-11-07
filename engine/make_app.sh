@@ -24,6 +24,15 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Synco"
 cp brand/AppIcon.icns "$APP/Contents/Resources/"
+# ffmpeg (see ffmpeg_mac.sh) reads what Apple's reader can't: MKV, AVI, WebM, MTS…
+FFMPEG=${FFMPEG:-.build/ffmpeg-mac/ffmpeg}
+case "$FFMPEG" in /*) ;; *) [ -f "../$FFMPEG" ] && FFMPEG="../$FFMPEG" ;; esac
+if [ -x "$FFMPEG" ]; then
+  cp "$FFMPEG" "$APP/Contents/MacOS/ffmpeg"
+  cp "$(dirname "$FFMPEG")/ffmpeg-LICENSE.txt" "$APP/Contents/Resources/" 2>/dev/null || true
+else
+  echo "aviso: sin ffmpeg ($FFMPEG): solo los formatos que lee macOS"
+fi
 cp brand/mark-white.png "$APP/Contents/Resources/mark.png"           # white versions: the app is dark
 cp brand/wordmark-white.png "$APP/Contents/Resources/wordmark.png"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -40,7 +49,18 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>UTExportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>local.mariano.synco.project</string>
+    <key>UTTypeDescription</key><string>Proyecto de Synco</string>
+    <key>UTTypeConformsTo</key><array><string>public.json</string></array>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>synco</string></array></dict>
+  </dict></array>
   <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>Proyecto de Synco</string>
+    <key>CFBundleTypeRole</key><string>Editor</string>
+    <key>LSItemContentTypes</key><array><string>local.mariano.synco.project</string></array>
+    <key>LSHandlerRank</key><string>Owner</string>
+  </dict><dict>
     <key>CFBundleTypeName</key><string>XML de línea de tiempo</string>
     <key>CFBundleTypeRole</key><string>Viewer</string>
     <key>LSItemContentTypes</key><array><string>public.xml</string></array>
@@ -48,5 +68,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   </dict></array>
 </dict></plist>
 PLIST
+[ -f "$APP/Contents/MacOS/ffmpeg" ] && codesign --force --sign - "$APP/Contents/MacOS/ffmpeg" >/dev/null 2>&1
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 echo "listo: $(cd "$APP" && pwd)"

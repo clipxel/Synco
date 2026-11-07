@@ -23,6 +23,12 @@ public struct MediaInfo {
 public func probeMedia(_ url: URL) -> MediaInfo? {
     var info = MediaInfo()
 #if canImport(AVFoundation) && !SYNCO_PORTABLE
+    // What Apple's reader can't open (MKV, AVI, WebM, MTS…): ffmpeg, bundled with the app.
+    if !FFmpeg.prefersApple(url) {
+        let text = (try? FFmpeg.run(["-hide_banner", "-nostdin", "-i", url.path], stderrOnly: true)) ?? ""
+        info = parseFFmpegInfo(text)
+        return info.hasVideo || info.hasAudio ? info : nil
+    }
     let asset = AVURLAsset(url: readableURL(url))
     info.duration = asset.duration.seconds.isFinite ? asset.duration.seconds : 0
     if let v = asset.tracks(withMediaType: .video).first {
@@ -37,6 +43,9 @@ public func probeMedia(_ url: URL) -> MediaInfo? {
               let basic = CMAudioFormatDescriptionGetStreamBasicDescription(desc as! CMAudioFormatDescription)?.pointee else { continue }
         info.channels += Int(basic.mChannelsPerFrame)
         info.sampleRate = max(info.sampleRate, basic.mSampleRate)
+    }
+    if !info.hasVideo && !info.hasAudio && FFmpeg.available {
+        info = parseFFmpegInfo((try? FFmpeg.run(["-hide_banner", "-nostdin", "-i", url.path], stderrOnly: true)) ?? "")
     }
 #else
     let text = (try? FFmpeg.run(["-hide_banner", "-nostdin", "-i", url.path], stderrOnly: true)) ?? ""
@@ -105,7 +114,12 @@ public enum ProjectBuilder {
         public var isCamera: Bool { files.contains { videoExtensions.contains($0.pathExtension.lowercased()) } }
     }
 
-    static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "mxf", "mts", "m2ts", "avi", "mkv", "3gp", "webm", "insv"]
+    /// Every video container a camera, phone, screen recorder or old camcorder writes.
+    static let videoExtensions: Set<String> = [
+        "mov", "mp4", "m4v", "mxf", "mts", "m2ts", "m2t", "ts", "avi", "mkv", "3gp", "3g2", "webm", "insv",
+        "wmv", "asf", "flv", "f4v", "mpg", "mpeg", "m2v", "vob", "mod", "tod", "dv", "ogv", "mjpeg", "divx", "xvid",
+        "rm", "rmvb", "nut", "y4m", "mpv", "qt",
+    ]
 
     /// Where projects built from folders are kept (the editor's XML is exported apart, by the user).
     public static let projectsDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -135,7 +149,8 @@ public enum ProjectBuilder {
     }
 
     static let mediaExtensions: Set<String> = videoExtensions.union([
-        "wav", "bwf", "aif", "aiff", "mp3", "m4a", "aac", "flac", "caf", "ogg", "opus", "wma",
+        "wav", "bwf", "aif", "aiff", "aifc", "mp3", "mp2", "m4a", "m4b", "aac", "flac", "caf", "ogg", "oga", "opus", "wma",
+        "ac3", "eac3", "dts", "amr", "awb", "mka", "w64", "rf64", "wv", "ape", "tta", "au", "snd", "voc", "spx", "mpc",
     ])
     /// Folders a camera fills with copies or thumbnails that are not the footage.
     static let skippedFolders: Set<String> = ["proxy", "proxies", "thmbnl", "thumbnails", "sub", "general", "cache"]

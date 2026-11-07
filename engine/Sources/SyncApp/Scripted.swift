@@ -32,6 +32,10 @@ enum Scripted {
             let t0 = Date()
             if let path = value("--open") {
                 model.open(URL(fileURLWithPath: path))
+                if path.hasSuffix(".synco") {
+                    await waitWhile { model.phase == .reading && model.project == nil }
+                    print("synco: proyecto guardado: \(model.syncedCount) sincronizados, corregidos a mano \(model.outcome?.manual ?? [:]), drones \(model.outcome?.drones.count ?? 0), seleccionado \(model.selected.flatMap { model.clip($0)?.name } ?? "-")")
+                }
                 print("synco: abriendo, fase \(model.phase)")
                 // --sync-early: Sincronizar pressed while it still opens and reads, as a hurried user does.
                 if args.contains("--sync-early") {
@@ -114,6 +118,11 @@ enum Scripted {
                              model.pictureClip.flatMap { model.clip($0)?.name } ?? "ninguna"))
                 print(String(format: "synco: imagen en %.2f s del archivo, estado %d, velocidad %.1f", model.videoPlayer.currentTime().seconds,
                              model.videoPlayer.currentItem?.status.rawValue ?? -1, model.videoPlayer.rate))
+            }
+            // --save <file.synco>: Guardar proyecto, to that file.
+            if let path = value("--save") {
+                model.saveProject(to: URL(fileURLWithPath: path))
+                print("synco: \(model.message)")
             }
             if let path = value("--export") {
                 model.export(to: URL(fileURLWithPath: path))
